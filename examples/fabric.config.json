@@ -1,0 +1,10 @@
+{
+  "maxActiveAgents": 6,
+  "models": {
+    "astra": { "id": "your-provider/your-highest-model", "rank": 5 },
+    "sol": { "id": "your-provider/your-high-model", "rank": 4 },
+    "terra": { "id": "your-provider/your-standard-model", "rank": 3 },
+    "luna": { "id": "your-provider/your-small-model", "rank": 2 },
+    "qwen": { "id": "your-provider/your-economy-model", "rank": 1 }
+  }
+}

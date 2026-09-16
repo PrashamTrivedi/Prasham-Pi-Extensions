@@ -1,0 +1,10 @@
+{
+  "dailyNeuronAllowance": 10000,
+  "usdPerThousandNeurons": 0.011,
+  "billing": {
+    "accountIdEnv": "CLOUDFLARE_ACCOUNT_ID",
+    "tokenEnv": "CLOUDFLARE_BILLING_TOKEN",
+    "refreshMinutes": 30
+  },
+  "modelRatesPerMillionTokensUsd": {}
+}

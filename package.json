@@ -1,0 +1,51 @@
+{
+  "name": "prasham-pi-extensions",
+  "version": "0.1.0",
+  "description": "Prasham Trivedi's Pi extensions: recursive agent teams, live TUI, repository context, and usage utilities.",
+  "type": "module",
+  "private": true,
+  "author": "Prasham Trivedi",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PrashamTrivedi/Prasham-Pi-Extensions.git"
+  },
+  "homepage": "https://github.com/PrashamTrivedi/Prasham-Pi-Extensions#readme",
+  "bugs": { "url": "https://github.com/PrashamTrivedi/Prasham-Pi-Extensions/issues" },
+  "keywords": ["pi-package", "pi", "extensions", "agents", "tui"],
+  "engines": { "node": ">=22.19.0" },
+  "pi": {
+    "image": "https://raw.githubusercontent.com/PrashamTrivedi/Prasham-Pi-Extensions/main/docs/preview.png",
+    "extensions": [
+      "./extensions/fabric/index.ts",
+      "./extensions/project-context.ts",
+      "./extensions/recursive-context.ts",
+      "./extensions/cloudflare-ai-usage.ts",
+      "./extensions/sanitize-skill-names.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && node scripts/check-package.mjs",
+    "preview": "node scripts/preview.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/bun": "^1.3.10",
+    "@types/node": "^22.0.0",
+    "typebox": "1.3.7",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+pi-fabric.config.json
+cloudflare-ai-usage.config.json
+!examples/*.json
