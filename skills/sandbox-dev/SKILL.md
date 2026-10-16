@@ -8,9 +8,10 @@ description: End-to-end autonomous development in the current session - plan, di
 Everything runs end-to-end in this session. There is no Docker and no tmux, and
 there is no sandbox mode, auto mode, or permission-mode setting to detect. A Pi
 extension owns tool permissions: it gates every tool call as **allow**,
-**confirm**, or **deny**, and it fails closed (denies) when no interactive UI is
-present to ask a human. Your job is to stay inside the repo, respect a deny, and
-never try to route around the gate.
+**confirm**, or **deny**, and fails closed (denies) when no interactive UI is
+present to ask a human. Plan approval is conversational: the human's reply in the
+chat is the record, and you read it. Your job is to stay inside the repo, respect
+a deny, and never try to route around the gate.
 
 **Flow:** Plan → Digest & Approval → Implement → Complete → Finalize
 
@@ -22,15 +23,20 @@ This skill is driven by a Pi extension. Know these names precisely:
 
 | Kind | Name | Purpose |
 |------|------|---------|
-| Tool | `dev_request_approval` | Args `{ task: "<task-dir-name>" }`. Reads `taskNotes/<task>/taskFindings.md` from disk and blocks on the typed plan gate: `g` (go/approve), `t: <feedback>` or `t` (tweak), `r` (reject/show the full plan). |
+| Tool | `dev_request_approval` | Args `{ task: "<task-dir-name>" }`. Reads `taskNotes/<task>/taskFindings.md` from disk and appends the plan gate to the chat. It records nothing; the human's reply in the chat is the record. |
 | Tool | `dev_outcome_met` | Args `{ task, evidence }`. Declares the single stated outcome achieved. `evidence` must be raw transcript-visible output (exit codes, test summary lines), not a claim. |
-| Command | `/dev-approve <task>` | Human-side plan gate - the same `g` / `t: <feedback>` / `r` prompt. |
+| Command | `/dev-approve <task>` | Explicit human-only approval: records the plan and starts `/startWork`. |
 | Command | `/dev-status` | Print the extension's current approval/outcome state for the session. |
 | Command | `/dev-reset` | Clear approval/outcome state and start the supervision cleanly. |
 
-The extension records approvals as `sandbox-dev-approval` session entries. After
-approval it supervises the run against one stated **single outcome** with a turn
-budget. Do not promise any sandbox, auto, or unattended mode; there is none.
+The gate is **chat-native and conversational**. `dev_request_approval` appends a
+`sandbox-dev gate` message to the conversation and stops; it does not classify
+anything and records nothing. The human answers in the chat, and that reply is a
+normal turn you read. The transcript is the record.
+
+Once implementation starts, the extension supervises the run against one stated
+**single outcome** with a turn budget. Do not promise any sandbox, auto, or
+unattended mode; there is none.
 
 The extension also reports the absolute paths of the three native procedure files
 (`codePlanner.md`, `startWork.md`, `completeWork.md`) in the system prompt. Use
@@ -116,42 +122,54 @@ recommendations. Print this exact format to the transcript:
 **Watch for:** {schema migrations, auth changes, new patterns, broad refactors - or "Nothing unusual"}
 ---
 
-Echo the digest into the transcript before the next step: it is the human's only
+Echo the digest into the transcript before the next step: it is the human's
 summary of what they are about to approve.
 
-**Step 2.2 - Request approval with the tool.** Call:
+**Step 2.1b - Add a risk review (model task, not Jev).** Immediately after the
+digest, write a short review in your own words. This is ordinary model judgment,
+not a TypeSafe/Jev decision. Cover:
+
+- **Scope drift** - anywhere the plan does more or less than `Original Ask`.
+- **Missing edge cases** - inputs, states, or failures the plan does not handle.
+- **Irreversible steps** - migrations, deletes, publishes, force operations.
+- **Recommendation** - one of `approve`, `tweak`, or `reject`, with one line of
+  reasoning.
+
+This review is **advisory only**. It never approves; the human decides. State it
+plainly so the human can disagree.
+
+**Step 2.2 - Present the gate in the chat.** Call:
 
 ```
 dev_request_approval { "task": "<task-dir-name>" }
 ```
 
-The tool reads `taskNotes/<task>/taskFindings.md` from disk and presents the typed
-gate: **`g`** (go - approve), **`t: <feedback>`** (tweak; `t` alone opens a
-multi-line editor), or **`r`** (reject - show the full plan, then choose again).
-The human can also run `/dev-approve <task>`.
+The tool reads `taskNotes/<task>/taskFindings.md` from disk and appends a
+`sandbox-dev gate` message to the conversation. It returns immediately and
+records nothing. The human replies in the chat; that reply is your input. They
+may also run `/dev-approve <task>` for an explicit approval.
 
-**Step 2.3 - Act on the result.**
+**Step 2.3 - Read the human's reply.** The extension does not hand you a verdict;
+the human's next chat message is it. Read it and act:
 
-| Result | Action |
+| The human's reply | Action |
 |---|---|
-| Approved | Proceed to PHASE 3. Only now may you implement. |
-| Approved (`g`) | Proceed to PHASE 3. Only now may you implement. |
-| Rejected / feedback (`t` or a plain message) | The human's text comes back **verbatim** in the tool result. Update `taskNotes/<task>/taskFindings.md`, re-run Step 2.1 (new digest), and call `dev_request_approval` again. |
-| No response / blocked | Do not implement. Wait. If the session was interrupted, ask the human to run `/dev-status`. |
+| Approves (`g`, `g: <note>`, `looks good`) | Proceed to PHASE 3. Only now may you implement. |
+| Requests a change (`t: <feedback>` or any wording) | Fold it into `taskNotes/<task>/taskFindings.md`, re-run Step 2.1 (new digest), then call `dev_request_approval` again. |
+| Rejects (`r`) | Show the full plan and ask again. |
+| A side question | Answer it; the gate stays open. |
 
-Only `g` (or `go`/`yes`) approves. Any other text - with or without a `t:`
-prefix - is a revised requirement: fold it into the plan and request approval
-again. `r` only re-reads the plan; it never approves. A cancelled gate is not
-approval.
-
-Never implement a plan that has not been approved in this session. If you are
-unsure of the state, ask the human to run `/dev-status`; if the state is stale or
-corrupted, the human can `/dev-reset`. Do not call `dev_request_approval` more
-than once in a row without new feedback; it blocks and would just spin.
+Only the human's approval (or `/dev-approve`) lets you implement; `r` only shows
+the plan and is not an approval. Never implement a plan the human has not
+approved in the chat. If you are unsure of the state, ask the human to run
+`/dev-status`; if it is stale, the human can `/dev-reset`.
 
 ---
 
 ## PHASE 3: IMPLEMENTATION
+
+PHASE 3 begins only after the human has approved in the chat (or run
+`/dev-approve`). Do not implement before that.
 
 Load the implementation procedure and follow it: `read` the `startWork.md` path
 reported by the extension, and run it for `<task>`, selecting the branch strategy
@@ -248,9 +266,10 @@ consistent.
 
 - Detecting or promising a permission mode. There is none; the extension gate is
   the only permission authority.
-- Implementing before `dev_request_approval` returns approved.
-- Treating a plan on disk as approval. Approval is a session event, recorded as a
-  `sandbox-dev-approval` entry.
+- Implementing before the human has approved in the chat (or run `/dev-approve`).
+- Treating a plan on disk as approval. Approval is the human's reply in the
+  transcript; the extension records nothing.
+- Calling `dev_request_approval` more than once in a row without new feedback.
 - Declaring an outcome with a claim instead of raw output.
 - Expanding scope beyond `Original Ask` instead of stopping to ask for a new plan.
 - Creating a TODO list. Capture the plan in `taskFindings.md` instead.

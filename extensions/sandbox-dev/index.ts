@@ -3,32 +3,33 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadConfig, agentDir } from "./config.ts";
-import { DEFAULT_CONFIG, classifyToolCall, type SandboxDevConfig } from "./rules.ts";
-import {
-  anchorMessage,
-  countAnchorContinuations,
-  extractOutcome,
-  findLatestApproval,
-  hashPlan,
-  isOutcomeMet,
-  type ApprovalRecord,
-} from "./state.ts";
+import { DEFAULT_CONFIG, classifyToolCall, isImplementation, type PolicyCall } from "./policy.ts";
+import { anchorMessage, extractOutcome } from "./state.ts";
 
 const STATUS_KEY = "sandbox-dev";
-const APPROVAL_ENTRY = "sandbox-dev-approval";
 const OUTCOME_ENTRY = "sandbox-dev-outcome";
 const ANCHOR_MESSAGE = "sandbox-dev-anchor";
+const GATE_MESSAGE = "sandbox-dev-gate";
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const GATE_HINT = "[g]o · [t]weak: <feedback> · [r]eject/show full plan";
 
-interface Anchor extends ApprovalRecord {
+interface PlanAnchor {
+  task: string;
+  outcome: string;
+  budget: number;
+}
+interface Anchor extends PlanAnchor {
   met: boolean;
+  /** The turn budget ran out. Distinct from `met`: the outcome was never declared satisfied. */
+  exhausted: boolean;
 }
 
 export default function sandboxDev(pi: ExtensionAPI) {
-  let config: SandboxDevConfig = DEFAULT_CONFIG;
+  const config = DEFAULT_CONFIG;
+  /** Armed once implementation starts. Supervision is keyed on this, not on approval. */
   let anchor: Anchor | undefined;
+  /** Present once the gate is shown; the outcome comes from the plan it read. */
+  let pendingAnchor: PlanAnchor | undefined;
   let turnsUsed = 0;
 
   const status = (ctx: ExtensionContext, text: string | undefined) => {
@@ -36,12 +37,19 @@ export default function sandboxDev(pi: ExtensionAPI) {
   };
 
   const renderStatus = (ctx: ExtensionContext) => {
-    if (!anchor) {
+    const active = anchor ?? pendingAnchor;
+    if (!active) {
       status(ctx, undefined);
       return;
     }
-    const label = anchor.met ? "outcome met" : `turn ${turnsUsed}/${anchor.budget}`;
-    status(ctx, `sandbox-dev · ${anchor.task} · ${label}`);
+    const label = !anchor
+      ? "awaiting approval"
+      : anchor.met
+        ? "outcome met"
+        : anchor.exhausted
+          ? "budget exhausted"
+          : `turn ${turnsUsed}/${anchor.budget}`;
+    status(ctx, `sandbox-dev · ${active.task} · ${label}`);
   };
 
   const readPlan = (cwd: string, task: string): { text: string } | undefined => {
@@ -53,96 +61,68 @@ export default function sandboxDev(pi: ExtensionAPI) {
     }
   };
 
-  /** Read the plan from disk, then present the go / tweak / show gate and arm the outcome anchor.
-   *  `go` approves; `tweak` returns the human's feedback verbatim; `show` re-reads the full plan. */
-  const approve = async (
-    task: string,
-    ctx: ExtensionContext,
-  ): Promise<{ ok: boolean; message: string; feedback?: string; cancelled?: boolean; record?: ApprovalRecord }> => {
-    const plan = readPlan(ctx.cwd, task);
-    if (!plan) {
-      return { ok: false, message: `No plan at taskNotes/${task}/taskFindings.md. Run /codePlanner first.` };
-    }
-    const outcome = extractOutcome(plan.text);
-    if (!outcome) {
-      return { ok: false, message: `taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.` };
-    }
-    const record: ApprovalRecord = {
-      task,
-      planHash: hashPlan(plan.text),
-      outcome,
-      budget: config.budget,
-      approvedAt: Date.now(),
-    };
-    if (!ctx.hasUI) {
-      return { ok: false, message: `No UI available; refusing to auto-approve. Plan (${record.planHash}):\n\n${plan.text}` };
-    }
-
-    // The original typed gate: [g]o · [t]weak: <feedback> · [r]eject/show full plan.
-    for (;;) {
-      const answer = await ctx.ui.input(`Plan ${task} (plan ${record.planHash}) - ${GATE_HINT}`);
-      if (answer === undefined || answer === null) {
-        return { ok: false, cancelled: true, message: "Approval cancelled; the plan is unchanged. Do not implement." };
-      }
-      const reply = String(answer).trim();
-      if (!reply) continue;
-      const lower = reply.toLowerCase();
-      if (["g", "go", "yes", "y"].includes(lower)) {
-        pi.appendEntry(APPROVAL_ENTRY, record);
-        anchor = { ...record, met: false };
-        turnsUsed = 0;
-        renderStatus(ctx);
-        return { ok: true, message: `Approved ${task} (plan ${record.planHash}). Outcome anchored.`, record };
-      }
-      if (["r", "reject", "show", "plan"].includes(lower)) {
-        await ctx.ui.editor(`Full plan: taskNotes/${task}/taskFindings.md (close to return to the gate)`, plan.text);
-        continue;
-      }
-      // Anything else is feedback: `t: …`, `tweak: …`, `t` alone (multi-line editor), or a plain message.
-      let feedback: string;
-      if (["t", "tweak"].includes(lower)) {
-        const edited = await ctx.ui.editor("Feedback to fold into the plan (Esc to go back):", "");
-        if (edited === undefined) continue;
-        feedback = edited.trim();
-      } else {
-        feedback = reply.replace(/^(t|tweak)\s*:\s*/i, "").trim();
-      }
-      if (!feedback) continue;
-      return { ok: false, feedback, message: `Not approved. The human replied with feedback instead of \`g\`: ${feedback}` };
-    }
+  /** Present the gate in the chat. The human's reply is the record; the extension records nothing. */
+  const presentGate = (ctx: ExtensionContext, task: string, outcome: string) => {
+    pendingAnchor = { task, outcome, budget: config.budget };
+    pi.sendMessage(
+      {
+        customType: GATE_MESSAGE,
+        display: true,
+        content: [
+          `**sandbox-dev gate** · plan \`${task}\``,
+          "",
+          `Reply in this chat: ${GATE_HINT}.`,
+          "The transcript is the record: implementation starts only after the human approves here.",
+        ].join("\n"),
+      },
+      { triggerTurn: false },
+    );
+    renderStatus(ctx);
   };
 
+  const armAnchor = (ctx: ExtensionContext) => {
+    if (!pendingAnchor) return;
+    anchor = { ...pendingAnchor, met: false, exhausted: false };
+    pendingAnchor = undefined;
+    turnsUsed = 0;
+    renderStatus(ctx);
+  };
+
+  const notApproved = (text: string) => ({
+    content: [{ type: "text" as const, text: `NOT APPROVED. ${text}` }],
+    details: {},
+  });
+
   pi.on("session_start", async (_event, ctx) => {
-    const loaded = loadConfig(ctx.cwd, agentDir());
-    config = loaded.config;
-    if (loaded.errors.length > 0) {
-      ctx.ui.notify(`sandbox-dev config ignored: ${loaded.errors.join("; ")}`, "warning");
-    }
-    const entries = ctx.sessionManager.getBranch();
-    const record = findLatestApproval(entries);
-    if (record && !isOutcomeMet(entries, record.task)) {
-      anchor = { ...record, met: false };
-      turnsUsed = countAnchorContinuations(entries);
-    } else {
-      anchor = undefined;
-      turnsUsed = 0;
-    }
+    anchor = undefined;
+    pendingAnchor = undefined;
+    turnsUsed = 0;
     renderStatus(ctx);
   });
 
-  // Tell the model where the native procedure files live, so it can read them from any cwd.
-  pi.on("before_agent_start", async (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\nsandbox-dev procedure files (absolute paths): ${["codePlanner", "startWork", "completeWork"]
-      .map((name) => join(PACKAGE_ROOT, "prompts", `${name}.md`))
-      .join(", ")}.`,
-  }));
+  // Tell the model where the procedure files live, and that a gate reply is its to read.
+  pi.on("before_agent_start", async (event) => {
+    const gate = pendingAnchor
+      ? `\n\nsandbox-dev: a plan gate is open for "${pendingAnchor.task}". The human replies in this chat; read their reply. Implement only if they approve. If they ask for a change, revise taskNotes/${pendingAnchor.task}/taskFindings.md and call dev_request_approval again.`
+      : "";
+    return {
+      systemPrompt: `${event.systemPrompt}${gate}\n\nsandbox-dev procedure files (absolute paths): ${["codePlanner", "startWork", "completeWork"]
+        .map((name) => join(PACKAGE_ROOT, "prompts", `${name}.md`))
+        .join(", ")}.`,
+    };
+  });
 
-  // --- Target 1: minimal permission model -------------------------------------------------
+  // --- Target 1: permission floor ----------------------------------------------------------
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName === "dev_request_approval" || event.toolName === "dev_outcome_met") return;
     const input = event.input as unknown as Record<string, unknown>;
-    const decision = classifyToolCall({ toolName: event.toolName, input }, config, ctx.cwd);
+    const call: PolicyCall = { toolName: event.toolName, input };
+
+    // The first source mutation after the gate marks the start of implementation; arm supervision.
+    if (pendingAnchor && isImplementation(call, ctx.cwd)) armAnchor(ctx);
+
+    const decision = classifyToolCall(call, ctx.cwd, config);
     if (decision.verdict === "allow") return;
     if (decision.verdict === "deny") {
       ctx.ui.notify(`sandbox-dev denied ${event.toolName}: ${decision.reason}`, "error");
@@ -157,7 +137,8 @@ export default function sandboxDev(pi: ExtensionAPI) {
   });
 
   pi.on("user_bash", async (event, ctx) => {
-    const decision = classifyToolCall({ toolName: "bash", input: { command: event.command } }, config, ctx.cwd);
+    const call: PolicyCall = { toolName: "bash", input: { command: event.command } };
+    const decision = classifyToolCall(call, ctx.cwd, config);
     if (decision.verdict === "allow") return;
     const block = (output: string) => ({ result: { output, exitCode: 1, cancelled: false, truncated: false } });
     if (decision.verdict === "deny") return block(`sandbox-dev blocked: ${decision.reason}`);
@@ -166,49 +147,58 @@ export default function sandboxDev(pi: ExtensionAPI) {
     return confirmed ? undefined : block("sandbox-dev: denied by user");
   });
 
-  // --- Target 2: explicit plan approval ----------------------------------------------------
+  // --- Target 2: the plan gate, conversational ---------------------------------------------
 
   pi.registerTool({
     name: "dev_request_approval",
     label: "Dev Plan Approval",
     description:
-      "Read taskNotes/<task>/taskFindings.md from disk and present the typed plan gate: `g` (go/approve), `t: <feedback>` or `t` (tweak - the human's feedback returns to you verbatim), `r` (reject/show the full plan, then choose again). Call this at the plan checkpoint before any implementation. Only `g` approves.",
-    promptSnippet: "Request explicit human approval for a plan",
+      "Read taskNotes/<task>/taskFindings.md from disk and append the plan gate to the chat. The human answers there (g / t: <feedback> / r) and the transcript is the record. Do not implement until the human has approved in the chat.",
+    promptSnippet: "Present the plan gate in the chat",
     parameters: Type.Object({
       task: Type.String({ description: "The taskNotes directory name for this plan." }),
     }),
     executionMode: "sequential",
     async execute(_toolCallId, { task }, _signal, _update, ctx) {
-      const result = await approve(task, ctx);
-      let text = result.ok ? result.message : `NOT APPROVED. ${result.message}`;
-      if (result.feedback) {
-        text += `\n\nRevise taskNotes/${task}/taskFindings.md to address that feedback, re-run the digest, then call dev_request_approval again. Do not implement yet.`;
-      }
-      return { content: [{ type: "text", text }], details: result.record };
+      const plan = readPlan(ctx.cwd, task);
+      if (!plan) return notApproved(`No plan at taskNotes/${task}/taskFindings.md. Run /codePlanner first.`);
+      const outcome = extractOutcome(plan.text);
+      if (!outcome) return notApproved(`taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.`);
+      presentGate(ctx, task, outcome);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Gate presented for ${task} in the chat. Stop here; implement only after the human replies there and approves.`,
+          },
+        ],
+        details: {},
+      };
     },
   });
 
   pi.registerCommand("dev-approve", {
-    description: "Approve a plan (typed confirmation) and start the anchored implementation",
+    description: "Approve a plan explicitly and start the anchored implementation",
     handler: async (args, ctx) => {
-      const task = args.trim() || anchor?.task || "";
+      const task = args.trim() || pendingAnchor?.task || anchor?.task || "";
       if (!task) {
         ctx.ui.notify("Usage: /dev-approve <task-directory>", "warning");
         return;
       }
-      const result = await approve(task, ctx);
-      ctx.ui.notify(result.message, result.ok ? "info" : "warning");
-      if (result.ok) {
-        pi.sendUserMessage(`/startWork taskNotes/${task}/taskFindings.md, mode: autonomous`, {
-          deliverAs: "followUp",
-          expandPromptTemplates: true,
-        });
-      } else if (result.feedback) {
-        pi.sendUserMessage(
-          `Plan ${task} was not approved. Fold this human feedback into taskNotes/${task}/taskFindings.md, then re-run the Phase 2 digest and request approval again: ${result.feedback}`,
-          { deliverAs: "followUp" },
-        );
+      const plan = readPlan(ctx.cwd, task);
+      if (!plan) {
+        ctx.ui.notify(`No plan at taskNotes/${task}/taskFindings.md. Run /codePlanner first.`, "warning");
+        return;
       }
+      const outcome = extractOutcome(plan.text);
+      if (!outcome) {
+        ctx.ui.notify(`taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.`, "warning");
+        return;
+      }
+      pendingAnchor = { task, outcome, budget: config.budget };
+      armAnchor(ctx);
+      ctx.ui.notify(`Approved ${task}. Outcome anchored.`, "info");
+      pi.sendUserMessage(`/startWork taskNotes/${task}/taskFindings.md, mode: autonomous`, { expandPromptTemplates: true });
     },
   });
 
@@ -229,6 +219,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
         return { content: [{ type: "text", text: `No active anchored outcome for "${task}".` }], details: {} };
       }
       anchor.met = true;
+      anchor.exhausted = false;
       pi.appendEntry(OUTCOME_ENTRY, { task, met: true, evidence, at: Date.now() });
       renderStatus(ctx);
       return { content: [{ type: "text", text: `Outcome marked met for ${task}. Evidence recorded.` }], details: {} };
@@ -241,7 +232,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
     if (!active || active.met || !event.context.canContinue) return;
 
     if (turnsUsed >= active.budget) {
-      active.met = true;
+      active.exhausted = true;
       renderStatus(ctx);
       ctx.ui.notify(`sandbox-dev: outcome budget exhausted (${active.budget} turns). Stopping.`, "warning");
       return {
@@ -269,13 +260,19 @@ export default function sandboxDev(pi: ExtensionAPI) {
   pi.registerCommand("dev-status", {
     description: "Show the active anchored outcome and its turn budget",
     handler: async (_args, ctx) => {
+      const active = anchor ?? pendingAnchor;
+      if (!active) {
+        ctx.ui.notify("sandbox-dev: no plan gate or anchored outcome.", "info");
+        return;
+      }
       if (!anchor) {
-        ctx.ui.notify("sandbox-dev: no active anchored outcome.", "info");
+        ctx.ui.notify(`sandbox-dev: awaiting the human's approval for ${active.task}.`, "warning");
         return;
       }
       const lines = [
-        `task: ${anchor.task} (plan ${anchor.planHash})`,
+        `task: ${anchor.task}`,
         `met: ${anchor.met}`,
+        `exhausted: ${anchor.exhausted}`,
         `turn: ${turnsUsed}/${anchor.budget}`,
         "",
         anchor.outcome,
@@ -285,12 +282,13 @@ export default function sandboxDev(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("dev-reset", {
-    description: "Clear the in-session anchor (session entries are preserved)",
+    description: "Clear the in-session gate and anchor",
     handler: async (_args, ctx) => {
       anchor = undefined;
+      pendingAnchor = undefined;
       turnsUsed = 0;
       renderStatus(ctx);
-      ctx.ui.notify("sandbox-dev: anchor cleared for this session.", "info");
+      ctx.ui.notify("sandbox-dev: gate and anchor cleared for this session.", "info");
     },
   });
 }
