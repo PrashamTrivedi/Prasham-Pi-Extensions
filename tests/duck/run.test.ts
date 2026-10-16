@@ -137,7 +137,7 @@ describe("buildDuckPanel", () => {
 describe("duckBodyRows", () => {
   test("stays within the 80% overlay budget with sane bounds", () => {
     expect(duckBodyRows(40)).toBe(24);
-    expect(duckBodyRows(10)).toBe(5);
+    expect(duckBodyRows(10)).toBe(4);
     expect(duckBodyRows(2)).toBe(4);
   });
 });

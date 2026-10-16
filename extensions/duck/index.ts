@@ -133,7 +133,9 @@ export function duckKeyAction(data: string): DuckAction | undefined {
 
 /** Body viewport height for a terminal with `terminalRows` rows. */
 export function duckBodyRows(terminalRows: number): number {
-  return Math.max(4, Math.min(Math.floor(terminalRows * 0.8) - 3, 24));
+  // The frame adds four chrome rows (top, separator, footer, bottom); keep the
+  // whole panel inside the overlay's 80% maxHeight.
+  return Math.max(4, Math.min(Math.floor(terminalRows * 0.8) - 4, 24));
 }
 
 export interface DuckPanelState {

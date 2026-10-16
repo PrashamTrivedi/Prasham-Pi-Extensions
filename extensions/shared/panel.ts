@@ -93,7 +93,10 @@ function borderBottom(theme: PanelTheme, width: number): string {
   return theme.fg("borderMuted", `╰${"─".repeat(inner)}╯`);
 }
 
-/** Compose a bordered panel; every line is exactly `width` visible columns. */
+/**
+ * Compose a bordered panel; every line is exactly `width` visible columns.
+ * Widths below 4 cannot carry a frame; every overlay here uses minWidth >= 40.
+ */
 export function renderPanel(theme: PanelTheme, width: number, view: PanelView): PanelLayout {
   const inner = panelInnerWidth(width);
   const bodyRows = view.body.flatMap((row) => wrapTextWithAnsi(row, inner));
