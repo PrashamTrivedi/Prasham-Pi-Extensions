@@ -86,6 +86,17 @@ export async function accumulateDuck(stream: AsyncIterable<DuckEvent>): Promise<
   return { text: text.trim() || textOfMessage(final), usage: usageOf(final), error };
 }
 
+/** opencode routes requests by session; nested calls must send its attribution header. */
+export function nestedHeaders(
+  model: { provider: string; baseUrl: string },
+  sessionId: string,
+): Record<string, string> | undefined {
+  const isOpencode =
+    model.provider === "opencode" || model.provider === "opencode-go" || model.baseUrl.includes("opencode.ai");
+  if (!isOpencode) return undefined;
+  return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
+}
+
 export default function duck(pi: ExtensionAPI) {
   pi.registerCommand("duck", {
     description: "Ask a questions-only second opinion about the current plan",
@@ -99,9 +110,13 @@ export default function duck(pi: ExtensionAPI) {
 
       const plan = latestAssistantText(ctx) || "(no plan in this session yet)";
       try {
-        const stream = ctx.modelRegistry.streamSimple(model, {
-          messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }],
-        });
+        const sessionId = ctx.sessionManager.getSessionId();
+        const headers = nestedHeaders(model, sessionId);
+        const stream = ctx.modelRegistry.streamSimple(
+          model,
+          { messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }] },
+          headers ? { sessionId, headers } : { sessionId },
+        );
         const result = await accumulateDuck(stream);
         const usage = result.usage;
         const header = `duck · ${model.provider}/${model.id} · in ${usage?.input ?? 0} / out ${usage?.output ?? 0}`;

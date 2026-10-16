@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { accumulateDuck, type DuckEvent } from "../../extensions/duck/index.ts";
+import { accumulateDuck, nestedHeaders, type DuckEvent } from "../../extensions/duck/index.ts";
 
 async function* stream(events: DuckEvent[]): AsyncIterable<DuckEvent> {
   for (const event of events) yield event;
@@ -42,5 +42,16 @@ describe("accumulateDuck", () => {
     const result = await accumulateDuck(stream([]));
     expect(result.text).toBe("");
     expect(result.usage).toBeUndefined();
+  });
+});
+
+describe("nestedHeaders", () => {
+  test("adds opencode session attribution only for opencode models", () => {
+    expect(nestedHeaders({ provider: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1" }, "s1")).toEqual({
+      "x-opencode-session": "s1",
+      "x-opencode-client": "pi",
+    });
+    expect(nestedHeaders({ provider: "anthropic", baseUrl: "https://api.anthropic.com" }, "s1")).toBeUndefined();
+    expect(nestedHeaders({ provider: "custom", baseUrl: "https://opencode.ai/x" }, "s2")?.["x-opencode-session"]).toBe("s2");
   });
 });
