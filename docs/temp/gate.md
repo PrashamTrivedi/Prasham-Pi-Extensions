@@ -1,0 +1,9 @@
+# Permission gate and duck findings
+
+`extensions/gate/index.ts` ports the dangerous `rm`, sensitive `.env` reads, force push/hard reset/protected branch/`git clean -fdx`, and likely secret-file staging checks from `/root/.claude/hookScripts/preToolUse.ts`. Pure matching is in `rules.ts` and has fake-free tests. The runtime gate follows Pi's documented annotation-based `needsApproval` expression, so MCP and extension tools are covered without a hardcoded allowlist. Rule findings add context to the confirmation. A disabled UI (print/JSON) fails closed with an explicit reason; interactive confirmation times out after 30 seconds. `/safety` displays/toggles rules.
+
+The gate listens to `pi.events` channel `ramp`; if workbench publishes `{ aggression: number }`, it consumes it and shows the value. No dependency on workbench is required, so no publisher simply means aggression remains zero. Event channels are untyped by Pi (`unknown` payload), so the runtime narrows the payload defensively.
+
+`extensions/duck/index.ts` uses the verified `ctx.modelRegistry.streamSimple(model, { messages })` API, never a CLI process. `/duck` extracts the latest assistant message as the current plan, asks for questions only, and puts the answer in a persistent widget. The final assistant usage (`input`/`output`) is surfaced in both the widget header and a notification. This is direct nested model accounting; a custom tool that made the same call would additionally report its own usage plus nested usage in its `AgentToolResult.usage` as documented.
+
+The TUI widget and confirmation cannot be visually exercised in print mode; manually run Pi interactively, call `/safety`, invoke a destructive/open-world tool, and call `/duck`. The installed Pi is 1.2.0 while package dev dependencies pin 0.85.1; typecheck against the repository's installed modules is the required compatibility check, and the report treats installed 1.2.0 declarations as authoritative.
