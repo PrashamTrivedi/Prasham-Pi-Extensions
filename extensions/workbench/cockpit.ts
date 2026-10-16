@@ -141,10 +141,18 @@ export function registerCockpit(pi: ExtensionAPI, getConfig: () => WorkbenchConf
 
   const fetchUsage = async (ctx: ExtensionContext): Promise<ProviderUsage | undefined> => {
     if (ctx.model?.provider !== "opencode-go") return undefined;
-    const key =
-      (await ctx.modelRegistry.getApiKeyForProvider("opencode-go")) ?? process.env.OPENCODE_API_KEY;
-    if (!key) return undefined;
-    return fetchOpencodeGoUsage({ apiKey: key });
+    try {
+      const key = await ctx.modelRegistry.getApiKeyForProvider("opencode-go");
+      // With no key, `fetchOpencodeGoUsage` reports the missing env var itself.
+      return await fetchOpencodeGoUsage(key ? { apiKey: key } : {});
+    } catch (error) {
+      // Never reject: the failure must show as a usage row, not an unhandled rejection.
+      return {
+        provider: "opencode-go",
+        windows: [],
+        error: error instanceof Error ? error.message : "usage unavailable",
+      };
+    }
   };
 
   const refresh = async (): Promise<void> => {
