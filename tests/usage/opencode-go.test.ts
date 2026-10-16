@@ -81,6 +81,20 @@ describe("fetchOpencodeGoUsage", () => {
     expect(usage.error).toContain("ETIMEDOUT");
   });
 
+  test("an injected apiKey is used without an env var", async () => {
+    delete process.env.OPENCODE_API_KEY;
+    let authorization = "";
+    const usage = await fetchOpencodeGoUsage({
+      apiKey: "injected",
+      fetchImpl: async (_input, init) => {
+        authorization = init?.headers?.Authorization ?? "";
+        return ok(fixture);
+      },
+    });
+    expect(usage.error).toBeUndefined();
+    expect(authorization).toBe("Bearer injected");
+  });
+
   test("TTL caches within the window and the key is only ever sent as a bearer header", async () => {
     let calls = 0;
     let seenAuthorization = "";

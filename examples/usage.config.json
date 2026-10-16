@@ -1,0 +1,7 @@
+{
+  "refreshMinutes": 5,
+  "opencodeGo": {
+    "keyEnv": "OPENCODE_API_KEY",
+    "baseUrl": "https://opencode.ai/zen/go/v1/usage"
+  }
+}

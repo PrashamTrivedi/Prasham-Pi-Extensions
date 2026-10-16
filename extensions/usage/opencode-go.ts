@@ -24,6 +24,8 @@ export type UsageFetch = (
 
 export interface OpencodeGoOptions {
   keyEnv?: string;
+  /** Explicit key; when set it overrides the environment lookup. */
+  apiKey?: string;
   baseUrl?: string;
   fetchImpl?: UsageFetch;
   now?: () => number;
@@ -64,7 +66,7 @@ function windowFrom(label: string, raw: unknown): UsageWindow | undefined {
 
 export async function fetchOpencodeGoUsage(options: OpencodeGoOptions = {}): Promise<ProviderUsage> {
   const keyEnv = options.keyEnv ?? "OPENCODE_API_KEY";
-  const key = process.env[keyEnv];
+  const key = options.apiKey ?? process.env[keyEnv];
   if (!key) return failure(`${keyEnv} not set`);
 
   const now = options.now ?? Date.now;
