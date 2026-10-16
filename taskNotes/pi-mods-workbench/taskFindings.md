@@ -8,20 +8,24 @@ all loadable and testable from this directory.
 
 ## Original Ask
 
-User's words (verbatim from the session):
+The user's requirements, in their words:
 
 > "I haven't seen anything about cockpit, pet or any other things apart from
 > usage. Are they being developed or dropped?"
 > "Increment 4. Including duck..."
-> "g with everything."  *(approval intent — awaiting the gate's literal `g`)*
-> "g: Everything should be implemented."  *(approval intent; the gate needs a bare `g` or `/dev-approve`)*
+> "Everything should be implemented."
 
-**Scope is everything:** all four specs (A pet+statusline, B cockpit, C
-observability, D duck) are in scope. Nothing in increment 4 or duck is deferred or
-simplified away.
+**Scope is everything, and nothing is deferred.** All four specs (A pet+statusline,
+B cockpit, C observability, D duck) are in scope, **including the ledger-server
+lifecycle** (auto-start, port, health, shutdown) that `docs/pi-mods-plan-2.md` §4
+lists for Increment 4. No item in Increment 4 or duck is dropped or simplified.
 
 Scoped outcome for this run — **Increment 4 as written in
 `docs/pi-mods-plan-2.md` §4, plus duck (4b)**:
+
+0. `extensions/shared/ledger/lifecycle.ts` — auto-start/health/shutdown of
+   `ledger-server.ts`, failure-visible, guarded when `PI_JEV_LEDGER_URL` is set or
+   the ledger is disabled (see blocker 1: needs one DoD exception).
 
 1. `extensions/workbench/` — one registered entry, feature-flagged by
    `workbench.config.json` (`pet`, `statusline`, `cockpit`), each feature in its
@@ -40,6 +44,21 @@ Scoped outcome for this run — **Increment 4 as written in
 8. **Fail visibly** (user directive): a missing ledger server, missing model, or
    provider failure is shown, not silently swallowed.
 
+## Approval log (not scope)
+
+This section is deliberately **outside `Original Ask`**, so the gate's
+`extractOutcome()` never anchors the run to gate syntax:
+
+- Earlier gate replies `"g with everything."` and `"g: Everything should be
+  implemented."` were classified as feedback, because the gate approves only a
+  literal `g` / `go` / `yes` / `y`. Folding those strings into `Original Ask`
+  (as a previous revision did) would have anchored the outcome to approval
+  chatter — that is the "dumb" approval to avoid.
+- The requirement they carried ("implement everything, defer nothing") is now
+  captured as the scope paragraph above and blocker 1 below.
+- The plan hash changes with this edit, so any earlier approval is invalid by
+  design. A plain `g` (or `/dev-approve pi-mods-workbench`) is required.
+
 ## Verified API surface (installed 1.2.0)
 
 | Capability | Verified declaration |
@@ -57,19 +76,25 @@ Scoped outcome for this run — **Increment 4 as written in
 
 - One `workbench` entry with feature flags; failures isolated per feature.
 - No `bun:sqlite`/`node:sqlite` in the Node graph; ledger via `shared/ledger.ts`.
-- No `as any` / `as unknown as`; no `child_process` / `pi.exec`.
+- No `as any` / `as unknown as`. `child_process` / `pi.exec` stay banned **except**
+  the single requested ledger-lifecycle exception in blocker 1.
 - `ctx.mode !== "tui"` guarded wherever UI is called.
 - No network in tests (injected `fetchImpl` / fake streams).
 
 ## Blockers / decisions to settle in this increment
 
-1. **Ledger-server lifecycle vs. the no-`child_process` rule.** `plan-2` I4 lists
-   auto-start/health/shutdown, but the definition of done forbids `child_process`
-   and `pi.exec`. **Decision proposed:** the extension **does not spawn** the
-   server. It health-checks `PI_JEV_LEDGER_URL`; the cockpit shows
-   `ledger server not running — bun run extensions/shared/ledger-server.ts` when
-   absent. Start/stop stays manual (documented in the walkthrough). Auto-start is
-   **deferred**, not dropped, and would require explicitly relaxing the DoD.
+1. **Ledger-server lifecycle is in scope and needs one DoD exception.** The user
+   directive is "Everything should be implemented", and `plan-2` §4 lists
+   auto-start/port/health/shutdown for Increment 4 — so auto-start is **in scope,
+   not deferred**. The DoD forbids `child_process` and `pi.exec`, so this approval
+   must also grant exactly one exception for the lifecycle manager: spawn
+   `bun run extensions/shared/ledger-server.ts` on demand, health-check the port,
+   and terminate it on `session_shutdown`. Design: one `ledger/lifecycle.ts`
+   (`ensureLedgerServer()`, `stopLedgerServer()`), skipped when
+   `PI_JEV_LEDGER_URL` is already set or the ledger is disabled; failures visible,
+   never thrown. If the human would rather keep the DoD intact, the fallback is
+   manual start + a cockpit health-check line — but that is a scope reduction and
+   is not what was asked for, so it is not proposed here.
 2. **`nonCapturing` overlays may not hold input while typing** (plan-2 §6). Fall
    back to `setWidget` if the manual run shows it steals focus.
 3. **Per-turn token/cost aggregate is still unresolved.** Cost is a running sum
@@ -149,6 +174,8 @@ For complexity >= 3, explicit criteria:
    `getContextUsage()` without fabricating numbers.
 7. `/report` reads the session ledger; the ledger is append-only and excluded from
    model context; a missing ledger server shows a visible message, not an error.
+7b. The ledger lifecycle auto-starts the server when unset, health-checks it, and
+   shuts it down on `session_shutdown`; a spawn/health failure is shown, not thrown.
 8. `/duck` returns **questions only**; the header shows nested `input`/`output`
    usage; a failing nested call is shown visibly.
 9. In `print`/non-UI mode nothing throws and no `ctx.ui.*` call is made.

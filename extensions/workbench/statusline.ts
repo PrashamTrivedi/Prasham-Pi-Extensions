@@ -18,11 +18,12 @@ export function registerStatusline(pi: ExtensionAPI, getConfig: () => WorkbenchC
       return {
         render: (width: number): string[] => {
           const usage = ctx.getContextUsage();
+          const entries = ctx.sessionManager.getEntries();
           const line1 = statusLine({
             branch: footerData.getGitBranch() ?? "no-branch",
             percent: usage?.percent ?? null,
-            durationMs: duration(ctx.sessionManager.getEntries()),
-            tokens: tokenTotals(ctx.sessionManager.getEntries()),
+            durationMs: duration(entries),
+            tokens: tokenTotals(entries),
           });
           const usageStatus = footerData.getExtensionStatuses().get("usage");
           const lines = [theme.fg("dim", truncateToWidth(line1, width))];
