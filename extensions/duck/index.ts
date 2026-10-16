@@ -1,10 +1,16 @@
 /**
- * `/duck` — a questions-only second opinion on the current plan, via an
- * in-process nested call (`ctx.modelRegistry.streamSimple`). No subprocess.
- * Nested-call token usage is shown in the widget header.
+ * `/duck` — an interactive, questions-only second opinion on the current plan,
+ * via an in-process nested call (`ctx.modelRegistry.streamSimple`). No subprocess.
+ *
+ * The overlay opens immediately (spinner + live streaming text), scrolls with
+ * arrows/j/k/PgUp/PgDn/g/G, and shows nested-call token usage in the header when
+ * the stream finishes. `esc` closes it.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { buildDuckPrompt } from "./prompt.ts";
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function textOfMessage(message: unknown): string {
   if (typeof message !== "object" || message === null) return "";
@@ -69,13 +75,17 @@ export type DuckEvent = {
 };
 
 /** Drive a nested stream to completion, accumulating text and usage. */
-export async function accumulateDuck(stream: AsyncIterable<DuckEvent>): Promise<DuckResult> {
+export async function accumulateDuck(
+  stream: AsyncIterable<DuckEvent>,
+  onDelta?: (text: string) => void,
+): Promise<DuckResult> {
   let text = "";
   let final: unknown;
   let error: string | undefined;
   for await (const event of stream) {
     if (event.type === "text_delta" && typeof event.delta === "string") {
       text += event.delta;
+      onDelta?.(text);
     } else if (event.type === "done") {
       final = event.message;
     } else if (event.type === "error") {
@@ -97,6 +107,49 @@ export function nestedHeaders(
   return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
 }
 
+interface PanelState {
+  text: string;
+  view: "asking" | "done";
+  usage?: { input?: number; output?: number };
+  error?: string;
+  spinner: string;
+  scroll: number;
+  height: number;
+  total: number;
+}
+
+export function buildPanelLines(
+  state: PanelState,
+  width: number,
+  label: string,
+): string[] {
+  const status =
+    state.error !== undefined
+      ? "error"
+      : state.view === "asking"
+        ? `${state.spinner} asking…`
+        : `in ${state.usage?.input ?? 0} / out ${state.usage?.output ?? 0}`;
+  const header = truncateToWidth(`duck · ${label} · ${status}`, width);
+
+  const body = state.error
+    ? wrapTextWithAnsi(`duck failed: ${state.error}`, width)
+    : wrapTextWithAnsi(
+        state.text.length > 0
+          ? state.text
+          : state.view === "asking"
+            ? "waiting for the model…"
+            : "(the model returned no questions)",
+        width,
+      );
+
+  const hint = truncateToWidth("↑/↓ scroll · g/G top/bottom · esc close", width);
+  const all = [header, "", ...body, "", hint];
+  state.total = all.length;
+  const maxScroll = Math.max(0, all.length - state.height);
+  state.scroll = Math.min(state.scroll, maxScroll);
+  return all.slice(state.scroll, state.scroll + state.height);
+}
+
 export default function duck(pi: ExtensionAPI) {
   pi.registerCommand("duck", {
     description: "Ask a questions-only second opinion about the current plan",
@@ -109,25 +162,92 @@ export default function duck(pi: ExtensionAPI) {
       if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
 
       const plan = latestAssistantText(ctx) || "(no plan in this session yet)";
-      try {
-        const sessionId = ctx.sessionManager.getSessionId();
-        const headers = nestedHeaders(model, sessionId);
-        const stream = ctx.modelRegistry.streamSimple(
-          model,
-          { messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }] },
-          headers ? { sessionId, headers } : { sessionId },
-        );
-        const result = await accumulateDuck(stream);
-        const usage = result.usage;
-        const header = `duck · ${model.provider}/${model.id} · in ${usage?.input ?? 0} / out ${usage?.output ?? 0}`;
-        const body = result.error
-          ? `duck failed: ${result.error}`
-          : result.text || "(the model returned no questions)";
-        ctx.ui.setWidget("duck", [header, "", ...body.split("\n")], { placement: "aboveEditor" });
-        ctx.ui.notify(result.error ? `duck: ${result.error}` : header, result.error ? "error" : "info");
-      } catch (error) {
-        ctx.ui.notify(`duck: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
+      const label = `${model.provider}/${model.id}`;
+
+      await ctx.ui.custom<void>(
+        (tui, _theme, _keybindings, done) => {
+          const state: PanelState = {
+            text: "",
+            view: "asking",
+            spinner: SPINNER[0],
+            scroll: 0,
+            height: Math.max(6, Math.floor(tui.terminal.rows * 0.7)),
+            total: 0,
+          };
+          const render = (): void => tui.requestRender();
+          const spinner = setInterval(() => {
+            if (state.view !== "asking") return;
+            const index = (SPINNER.indexOf(state.spinner) + 1) % SPINNER.length;
+            state.spinner = SPINNER[index];
+            render();
+          }, 120);
+
+          void (async () => {
+            const sessionId = ctx.sessionManager.getSessionId();
+            const headers = nestedHeaders(model, sessionId);
+            try {
+              const stream = ctx.modelRegistry.streamSimple(
+                model,
+                { messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }] },
+                headers ? { sessionId, headers } : { sessionId },
+              );
+              const result = await accumulateDuck(stream, (partial) => {
+                state.text = partial;
+                render();
+              });
+              state.usage = result.usage;
+              state.error = result.error;
+            } catch (error) {
+              state.error = error instanceof Error ? error.message : String(error);
+            } finally {
+              state.view = "done";
+              clearInterval(spinner);
+              render();
+            }
+          })();
+
+          const maxScroll = (): number => Math.max(0, state.total - state.height);
+          return {
+            render: (width: number): string[] => buildPanelLines(state, width, label),
+            handleInput: (data: string): void => {
+              if (data === "\u001b" || data === "q") {
+                clearInterval(spinner);
+                done();
+              } else if (data === "\u001b[A" || data === "k") {
+                state.scroll = Math.max(0, state.scroll - 1);
+                render();
+              } else if (data === "\u001b[B" || data === "j") {
+                state.scroll = Math.min(maxScroll(), state.scroll + 1);
+                render();
+              } else if (data === "\u001b[5~") {
+                state.scroll = Math.max(0, state.scroll - state.height);
+                render();
+              } else if (data === "\u001b[6~") {
+                state.scroll = Math.min(maxScroll(), state.scroll + state.height);
+                render();
+              } else if (data === "g") {
+                state.scroll = 0;
+                render();
+              } else if (data === "G") {
+                state.scroll = maxScroll();
+                render();
+              }
+            },
+            invalidate: () => {},
+            dispose: () => clearInterval(spinner),
+          };
+        },
+        {
+          overlay: true,
+          overlayOptions: {
+            anchor: "right-center",
+            width: "50%",
+            minWidth: 40,
+            maxHeight: "80%",
+            visible: (width) => width >= 80,
+          },
+        },
+      );
     },
   });
 

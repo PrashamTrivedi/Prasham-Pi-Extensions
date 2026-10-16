@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { accumulateDuck, nestedHeaders, type DuckEvent } from "../../extensions/duck/index.ts";
+import { accumulateDuck, buildPanelLines, nestedHeaders, type DuckEvent } from "../../extensions/duck/index.ts";
 
 async function* stream(events: DuckEvent[]): AsyncIterable<DuckEvent> {
   for (const event of events) yield event;
@@ -7,6 +7,7 @@ async function* stream(events: DuckEvent[]): AsyncIterable<DuckEvent> {
 
 describe("accumulateDuck", () => {
   test("accumulates text deltas and reads usage from done", async () => {
+    const seen: string[] = [];
     const result = await accumulateDuck(
       stream([
         { type: "start" },
@@ -14,10 +15,12 @@ describe("accumulateDuck", () => {
         { type: "text_delta", delta: "concurrency?" },
         { type: "done", message: { usage: { input: 12, output: 8 } } },
       ]),
+      (partial) => seen.push(partial),
     );
     expect(result.text).toBe("1. What about concurrency?");
     expect(result.usage).toEqual({ input: 12, output: 8 });
     expect(result.error).toBeUndefined();
+    expect(seen).toEqual(["1. What about ", "1. What about concurrency?"]);
   });
 
   test("falls back to the final message content when there are no deltas", async () => {
@@ -42,6 +45,37 @@ describe("accumulateDuck", () => {
     const result = await accumulateDuck(stream([]));
     expect(result.text).toBe("");
     expect(result.usage).toBeUndefined();
+  });
+});
+
+describe("buildPanelLines", () => {
+  const base = { text: "", view: "asking" as const, spinner: "⠋", scroll: 0, height: 12, total: 0 };
+
+  test("shows a spinner while asking", () => {
+    const lines = buildPanelLines(base, 80, "opencode-go/m");
+    expect(lines[0]).toContain("duck · opencode-go/m · ⠋ asking…");
+    expect(lines.join("\n")).toContain("waiting for the model…");
+  });
+
+  test("shows usage when done", () => {
+    const lines = buildPanelLines(
+      { ...base, view: "done", text: "Q1?\nQ2?", usage: { input: 10, output: 20 } },
+      80,
+      "opencode-go/m",
+    );
+    expect(lines[0]).toContain("in 10 / out 20");
+    expect(lines.join("\n")).toContain("Q1?");
+  });
+
+  test("shows the error", () => {
+    const lines = buildPanelLines({ ...base, view: "done", error: "boom" }, 80, "p/m");
+    expect(lines.join("\n")).toContain("duck failed: boom");
+  });
+
+  test("windows the body by height and scroll", () => {
+    const text = Array.from({ length: 40 }, (_, i) => `q${i}`).join("\n");
+    const lines = buildPanelLines({ ...base, view: "done", text, height: 10 }, 80, "p/m");
+    expect(lines.length).toBeLessThanOrEqual(10);
   });
 });
 
