@@ -3,6 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   accumulateDuck,
   buildDuckPanel,
+  capDuckQuestions,
   duckBodyRows,
   duckKeyAction,
   nestedHeaders,
@@ -94,6 +95,34 @@ describe("duckKeyAction", () => {
   });
 });
 
+describe("capDuckQuestions", () => {
+  test("leaves five or fewer questions unchanged", () => {
+    const text = ["1. First?", "2. Second?", "3. Third?"].join("\n");
+    expect(capDuckQuestions(text)).toEqual({ text, omitted: 0 });
+  });
+
+  test("keeps the first five questions and reports the rest", () => {
+    const text = Array.from({ length: 8 }, (_, index) => `${index + 1}. question ${index + 1}?`).join("\n");
+    const capped = capDuckQuestions(text);
+    expect(capped.omitted).toBe(3);
+    expect(capped.text.split("\n")).toHaveLength(5);
+    expect(capped.text).toContain("question 5?");
+    expect(capped.text).not.toContain("question 6?");
+  });
+
+  test("counts bullet and Q-prefixed markers", () => {
+    const text = ["- a?", "* b?", "• c?", "Q4: d?", "1) e?", "- f?"].join("\n");
+    const capped = capDuckQuestions(text);
+    expect(capped.omitted).toBe(1);
+    expect(capped.text).not.toContain("f?");
+  });
+
+  test("never mangles unstructured prose", () => {
+    const prose = "One long paragraph with no list markers and no question mark at the end.";
+    expect(capDuckQuestions(prose)).toEqual({ text: prose, omitted: 0 });
+  });
+});
+
 describe("buildDuckPanel", () => {
   const base = { text: "", view: "asking" as const, spinner: "⠋", scroll: 0, follow: true, limit: 12 };
 
@@ -124,6 +153,14 @@ describe("buildDuckPanel", () => {
     expect(offset).toBe(30);
     expect(lines.join("\n")).toContain("q39");
     expect(lines.join("\n")).toContain("lines 31–40 of 40");
+  });
+
+  test("shows the cap row when the model returns more than five questions", () => {
+    const text = Array.from({ length: 8 }, (_, index) => `${index + 1}. question ${index + 1}?`).join("\n");
+    const { lines } = buildDuckPanel(plain, { ...base, view: "done", text, limit: 20 }, 100, "p/m");
+    expect(lines.join("\n")).toContain("question 5?");
+    expect(lines.join("\n")).toContain("…and 3 more questions (capped at 5)");
+    expect(lines.join("\n")).not.toContain("question 6?");
   });
 
   test("every line fits the overlay width", () => {

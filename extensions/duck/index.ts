@@ -115,6 +115,44 @@ export function nestedHeaders(
 
 export type DuckAction = "close" | "lineUp" | "lineDown" | "pageUp" | "pageDown" | "home" | "end";
 
+/** Maximum questions shown; the prompt asks the model for the same cap. */
+export const DUCK_MAX_QUESTIONS = 5;
+
+const QUESTION_MARKER = /^\s*(?:[-*•]|\d+[.)]|Q\d*\s*[:.)])\s*/i;
+
+/** True when a line reads as a question (a list marker or a trailing `?`). */
+function isQuestionLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return false;
+  return trimmed.endsWith("?") || QUESTION_MARKER.test(trimmed);
+}
+
+export interface DuckCap {
+  text: string;
+  /** Questions dropped past the cap. */
+  omitted: number;
+}
+
+/**
+ * Keep at most `max` questions, preserving the lines of the kept ones. Text with
+ * no recognisable question lines is returned unchanged, so an unstructured
+ * answer is never mangled.
+ */
+export function capDuckQuestions(text: string, max: number = DUCK_MAX_QUESTIONS): DuckCap {
+  const lines = text.split("\n");
+  let seen = 0;
+  let cut = -1;
+  let omitted = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isQuestionLine(lines[index]!)) continue;
+    seen += 1;
+    if (seen === max) cut = index;
+    else if (seen > max) omitted += 1;
+  }
+  if (cut === -1 || omitted === 0) return { text, omitted: 0 };
+  return { text: lines.slice(0, cut + 1).join("\n"), omitted };
+}
+
 /**
  * Map one terminal input chunk to a panel action. `matchesKey` understands both
  * legacy sequences (`\x1b[A`) and Kitty-protocol encodings (`\x1b[1;1A`,
@@ -156,10 +194,16 @@ function duckStatus(state: DuckPanelState): string {
   return `in ${state.usage?.input ?? 0} / out ${state.usage?.output ?? 0}`;
 }
 
-function duckBody(state: DuckPanelState): string[] {
-  if (state.error !== undefined) return [`duck failed: ${state.error}`];
-  if (state.text.length > 0) return state.text.split("\n");
-  return [state.view === "asking" ? "waiting for the model…" : "(the model returned no questions)"];
+function duckBody(state: DuckPanelState): { rows: string[]; omitted: number } {
+  if (state.error !== undefined) return { rows: [`duck failed: ${state.error}`], omitted: 0 };
+  if (state.text.length > 0) {
+    const capped = capDuckQuestions(state.text);
+    return { rows: capped.text.split("\n"), omitted: capped.omitted };
+  }
+  return {
+    rows: [state.view === "asking" ? "waiting for the model…" : "(the model returned no questions)"],
+    omitted: 0,
+  };
 }
 
 /** Compose the duck panel, including the scroll-range hint in the footer. */
@@ -170,7 +214,11 @@ export function buildDuckPanel(
   label: string,
 ): PanelLayout {
   const right = `${label} · ${duckStatus(state)}`;
-  const body = duckBody(state);
+  const { rows, omitted } = duckBody(state);
+  const body =
+    omitted > 0
+      ? [...rows, "", theme.fg("dim", `…and ${omitted} more questions (capped at ${DUCK_MAX_QUESTIONS})`)]
+      : rows;
   const offset = state.follow ? Number.MAX_SAFE_INTEGER : state.scroll;
   const probe = renderPanel(theme, width, { title: TITLE, right, body, offset, limit: state.limit });
   const range =

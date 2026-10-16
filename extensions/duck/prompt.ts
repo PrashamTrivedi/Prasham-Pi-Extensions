@@ -4,7 +4,8 @@ export function buildDuckPrompt(plan: string, question: string): string {
   return [
     "You are a critical reviewer.",
     "Return QUESTIONS ONLY. Do not answer them, do not give advice, do not propose edits.",
-    "Order the questions from most to least important, so the first ones unblock the most.",
+    "Return at most 5 questions (4-5 unless fewer are needed), never more than 5.",
+    "Order them from most to least important, so the first ones unblock the most.",
     "Prefer specific, decision-relevant questions over generic ones.",
     "",
     `Focus: ${focus}`,
