@@ -20,6 +20,7 @@
       "./extensions/fabric/index.ts",
       "./extensions/sandbox-dev/index.ts",
       "./extensions/usage/index.ts",
+      "./extensions/workbench/index.ts",
       "./extensions/project-context.ts",
       "./extensions/recursive-context.ts",
       "./extensions/cloudflare-ai-usage.ts",

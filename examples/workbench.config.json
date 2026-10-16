@@ -1,0 +1,6 @@
+{
+  "pet": { "enabled": true, "theme": "auto", "badges": true },
+  "statusline": { "enabled": true, "showTokens": true },
+  "cockpit": { "enabled": true },
+  "observability": { "enabled": true }
+}
