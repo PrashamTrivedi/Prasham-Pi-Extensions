@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DEFAULT_WORKBENCH_CONFIG, loadWorkbenchConfig, type WorkbenchConfig } from "./config.ts";
 import { registerPet } from "./pet.ts";
 import { registerStatusline } from "./statusline.ts";
+import { registerCockpit } from "./cockpit.ts";
 
 function agentDir(): string {
   const fromEnv = process.env.PI_CODING_AGENT_DIR;
@@ -30,6 +31,7 @@ export default function workbench(pi: ExtensionAPI) {
   const features: Array<[string, () => void]> = [
     ["pet", () => registerPet(pi, getConfig)],
     ["statusline", () => registerStatusline(pi, getConfig)],
+    ["cockpit", () => registerCockpit(pi, getConfig)],
   ];
   for (const [name, register] of features) {
     try {
