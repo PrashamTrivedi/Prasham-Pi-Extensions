@@ -16,6 +16,7 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { clamp } from "./config.ts";
+import { readSessionEntries, summarizeSession } from "./session.ts";
 
 export interface LedgerRow {
   [key: string]: unknown;
@@ -23,6 +24,8 @@ export interface LedgerRow {
 
 export interface LedgerHandlerOptions {
   dbPath: string;
+  /** Path to the session JSONL; defaults to `PI_SESSION_LEDGER` or ~/.pi/agent/state/session.jsonl. */
+  sessionPath?: string;
 }
 
 export type LedgerHandler = (request: Request) => Promise<Response>;
@@ -37,6 +40,8 @@ function json(body: unknown, status = 200): Response {
 /** Pure request handler; the database is opened lazily and read-only on first use. */
 export function createLedgerHandler(options: LedgerHandlerOptions): LedgerHandler {
   let database: Database | undefined;
+
+  const sessionPath = options.sessionPath ?? process.env.PI_SESSION_LEDGER ?? join(homedir(), ".pi", "agent", "state", "session.jsonl");
 
   const open = (): Database => {
     if (!database) database = new Database(options.dbPath, { readonly: true });
@@ -63,6 +68,14 @@ export function createLedgerHandler(options: LedgerHandlerOptions): LedgerHandle
           .query("SELECT decision, COUNT(*) AS count FROM jev_calls GROUP BY decision ORDER BY count DESC")
           .all();
         return json({ rows });
+      }
+      if (url.pathname === "/session-calls") {
+        const requested = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+        const limit = clamp(Number.isFinite(requested) ? requested : 50, 1, 5000);
+        return json({ rows: readSessionEntries(limit, sessionPath) });
+      }
+      if (url.pathname === "/session-summary") {
+        return json({ rows: [summarizeSession(readSessionEntries(100_000, sessionPath))] });
       }
       return json({ error: "not found" }, 404);
     } catch (error) {

@@ -70,3 +70,12 @@ export function recentCalls(limit = 50, options?: LedgerClientOptions): Promise<
 export function decisionCounts(options?: LedgerClientOptions): Promise<LedgerResult<{ decision: string; count: number }>> {
   return get(`/decision-counts`, options);
 }
+
+export function sessionCalls(limit = 50, options?: LedgerClientOptions): Promise<LedgerResult> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(5000, Math.trunc(limit))) : 50;
+  return get(`/session-calls?limit=${safeLimit}`, options);
+}
+
+export function sessionSummary(options?: LedgerClientOptions): Promise<LedgerResult> {
+  return get(`/session-summary`, options);
+}

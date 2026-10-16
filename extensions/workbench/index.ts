@@ -10,6 +10,9 @@ import { DEFAULT_WORKBENCH_CONFIG, loadWorkbenchConfig, type WorkbenchConfig } f
 import { registerPet } from "./pet.ts";
 import { registerStatusline } from "./statusline.ts";
 import { registerCockpit } from "./cockpit.ts";
+import { registerMcpRenderer } from "./mcp-renderer.ts";
+import { registerContext } from "./context.ts";
+import { registerReport } from "./report.ts";
 
 function agentDir(): string {
   const fromEnv = process.env.PI_CODING_AGENT_DIR;
@@ -32,6 +35,14 @@ export default function workbench(pi: ExtensionAPI) {
     ["pet", () => registerPet(pi, getConfig)],
     ["statusline", () => registerStatusline(pi, getConfig)],
     ["cockpit", () => registerCockpit(pi, getConfig)],
+    [
+      "observability",
+      () => {
+        registerMcpRenderer(pi, getConfig);
+        registerContext(pi, getConfig);
+        registerReport(pi, getConfig);
+      },
+    ],
   ];
   for (const [name, register] of features) {
     try {
