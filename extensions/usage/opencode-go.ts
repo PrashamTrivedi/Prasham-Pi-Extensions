@@ -38,6 +38,7 @@ const DEFAULT_TTL_MS = 60_000;
 const WINDOW_LABELS = ["rolling", "weekly", "monthly"] as const;
 
 interface CacheEntry {
+  key: string;
   at: number;
   value: ProviderUsage;
 }
@@ -68,9 +69,10 @@ export async function fetchOpencodeGoUsage(options: OpencodeGoOptions = {}): Pro
 
   const now = options.now ?? Date.now;
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-  if (cache && now() - cache.at < ttlMs) return cache.value;
-
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+  const cacheKey = `${baseUrl}|${keyEnv}`;
+  if (cache && cache.key === cacheKey && now() - cache.at < ttlMs) return cache.value;
+
   const doFetch: UsageFetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
 
   try {
@@ -102,7 +104,7 @@ export async function fetchOpencodeGoUsage(options: OpencodeGoOptions = {}): Pro
       windows,
       note: "percent-only; provider reports no spend or tokens",
     };
-    cache = { at: now(), value };
+    cache = { key: cacheKey, at: now(), value };
     return value;
   } catch (error) {
     return failure(error instanceof Error ? error.message : "usage request failed");

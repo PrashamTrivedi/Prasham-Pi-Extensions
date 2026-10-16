@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -23,6 +23,9 @@ function status(code: number): UsageFetchResponse {
 beforeEach(() => {
   clearOpencodeGoUsageCache();
   process.env.OPENCODE_API_KEY = "test-key";
+});
+afterEach(() => {
+  delete process.env.OPENCODE_API_KEY;
 });
 
 describe("fetchOpencodeGoUsage", () => {
@@ -94,5 +97,16 @@ describe("fetchOpencodeGoUsage", () => {
     expect(cached.error).toBeUndefined();
     expect(seenAuthorization).toBe("Bearer test-key");
     expect(JSON.stringify(cached)).not.toContain("test-key");
+  });
+
+  test("the TTL cache is scoped to the resolved endpoint", async () => {
+    let calls = 0;
+    const fetchImpl: UsageFetch = async () => {
+      calls += 1;
+      return ok(fixture);
+    };
+    await fetchOpencodeGoUsage({ fetchImpl, baseUrl: "https://a.example/usage", ttlMs: 1000 });
+    await fetchOpencodeGoUsage({ fetchImpl, baseUrl: "https://b.example/usage", ttlMs: 1000 });
+    expect(calls).toBe(2);
   });
 });

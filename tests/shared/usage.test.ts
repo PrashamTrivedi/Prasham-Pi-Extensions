@@ -37,4 +37,8 @@ describe("formatUsage", () => {
   test("uses the note when there is nothing else to show", () => {
     expect(formatUsage({ provider: "opencode-go", windows: [], note: "no data yet" })).toContain("no data yet");
   });
+
+  test("never renders an empty segment", () => {
+    expect(formatUsage({ provider: "opencode-go", windows: [] })).toBe("opencode-go: no data");
+  });
 });

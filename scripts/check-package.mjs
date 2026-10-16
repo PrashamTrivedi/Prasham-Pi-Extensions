@@ -17,7 +17,7 @@ for (const entry of pkg.pi.extensions) {
   assert(!/test|activity\.ts|ui\.ts/.test(entry), `Helper listed as extension: ${entry}`);
   // A .ts entry cannot be imported by this Node-run script, so scan the source
   // for a default export instead.
-  assert(/export\s+default/.test(readFileSync(path, 'utf8')), `Entry has no default export: ${entry}`);
+  assert(/^export\s+default\b/m.test(readFileSync(path, 'utf8')), `Entry has no default export: ${entry}`);
 }
 
 for (const path of ['README.md', 'docs/preview.html', 'docs/preview.svg', 'SECURITY.md']) assert(existsSync(resolve(root, path)), `Missing ${path}`);

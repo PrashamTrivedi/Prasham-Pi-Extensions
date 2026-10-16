@@ -38,7 +38,7 @@ export function formatUsage(usage: ProviderUsage): string {
     parts.push(`$${usage.usdMtd.toFixed(2)} MTD`);
   }
 
-  if (parts.length === 0 && usage.note) return `${usage.provider}: ${usage.note}`;
+  if (parts.length === 0) return `${usage.provider}: ${usage.note ?? "no data"}`;
   const text = parts.join(" · ");
   return usage.note ? `${usage.provider}: ${text} (${usage.note})` : `${usage.provider}: ${text}`;
 }
