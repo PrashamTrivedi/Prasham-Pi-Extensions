@@ -19,6 +19,25 @@ function textOfMessage(message: unknown): string {
   return parts.join("\n").trim();
 }
 
+function usageOf(message: unknown): { input?: number; output?: number } | undefined {
+  if (typeof message !== "object" || message === null) return undefined;
+  const usage = (message as { usage?: unknown }).usage;
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const record = usage as Record<string, unknown>;
+  return {
+    input: typeof record.input === "number" ? record.input : undefined,
+    output: typeof record.output === "number" ? record.output : undefined,
+  };
+}
+
+function errorOf(message: unknown): string {
+  if (typeof message === "object" && message !== null) {
+    const errorMessage = (message as { errorMessage?: unknown }).errorMessage;
+    if (typeof errorMessage === "string" && errorMessage.length > 0) return errorMessage;
+  }
+  return "model error";
+}
+
 /** Latest assistant text from the active branch, used as the plan. */
 export function latestAssistantText(ctx: ExtensionContext): string {
   const entries = ctx.sessionManager.getBranch();
@@ -32,6 +51,39 @@ export function latestAssistantText(ctx: ExtensionContext): string {
     if (text.length > 0) return text;
   }
   return "";
+}
+
+export interface DuckResult {
+  text: string;
+  usage?: { input?: number; output?: number };
+  error?: string;
+}
+
+/** Structural subset of `AssistantMessageEvent`; keeps accumulation testable. */
+export type DuckEvent = {
+  type: string;
+  delta?: string;
+  partial?: unknown;
+  message?: unknown;
+  error?: unknown;
+};
+
+/** Drive a nested stream to completion, accumulating text and usage. */
+export async function accumulateDuck(stream: AsyncIterable<DuckEvent>): Promise<DuckResult> {
+  let text = "";
+  let final: unknown;
+  let error: string | undefined;
+  for await (const event of stream) {
+    if (event.type === "text_delta" && typeof event.delta === "string") {
+      text += event.delta;
+    } else if (event.type === "done") {
+      final = event.message;
+    } else if (event.type === "error") {
+      final = event.error;
+      error = errorOf(event.error);
+    }
+  }
+  return { text: text.trim() || textOfMessage(final), usage: usageOf(final), error };
 }
 
 export default function duck(pi: ExtensionAPI) {
@@ -50,12 +102,14 @@ export default function duck(pi: ExtensionAPI) {
         const stream = ctx.modelRegistry.streamSimple(model, {
           messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }],
         });
-        const message = await stream.result();
-        const text = textOfMessage(message) || "(the model returned no questions)";
-        const usage = (message as { usage?: { input?: number; output?: number } }).usage;
+        const result = await accumulateDuck(stream);
+        const usage = result.usage;
         const header = `duck · ${model.provider}/${model.id} · in ${usage?.input ?? 0} / out ${usage?.output ?? 0}`;
-        ctx.ui.setWidget("duck", [header, "", ...text.split("\n")], { placement: "aboveEditor" });
-        ctx.ui.notify(header, "info");
+        const body = result.error
+          ? `duck failed: ${result.error}`
+          : result.text || "(the model returned no questions)";
+        ctx.ui.setWidget("duck", [header, "", ...body.split("\n")], { placement: "aboveEditor" });
+        ctx.ui.notify(result.error ? `duck: ${result.error}` : header, result.error ? "error" : "info");
       } catch (error) {
         ctx.ui.notify(`duck: ${error instanceof Error ? error.message : String(error)}`, "error");
       }
