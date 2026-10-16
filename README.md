@@ -14,7 +14,7 @@ A Git-installable collection of [Pi](https://github.com/earendil-works/pi-mono) 
 pi install git:github.com/PrashamTrivedi/Prasham-Pi-Extensions@v0.1.0
 ```
 
-Run `/reload` inside an existing Pi session. Requires a recent Pi with the `@earendil-works` extension APIs; development targets **Pi 0.85.1** and Node **22.19+**. Fabric additionally requires Git, a repository with at least one commit, a `pi` executable on PATH, and authenticated model access. Shell-oriented context helpers are intended for macOS/Linux.
+Run `/reload` inside an existing Pi session. Requires a recent Pi with the `@earendil-works` extension APIs; development targets **Pi 1.2.0** and Node **22.19+**. Fabric additionally requires Git, a repository with at least one commit, a `pi` executable on PATH, and authenticated model access. Shell-oriented context helpers are intended for macOS/Linux.
 
 Install for a project instead:
 
@@ -46,6 +46,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | **Recursive context** | Loads nested `AGENTS.md` / `CLAUDE.md` in trusted projects | `PI_RECURSIVE_CONTEXT_MAX`, `PI_RECURSIVE_CONTEXT_NAMES` |
 | **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
+| **sandbox-dev** | Native plan → approve → implement → verify loop: minimal tool-permission gate, hash-bound plan approval, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools, `.pi/sandbox-dev.json` |
 
 The herdr-generated integration is intentionally not redistributed. Install herdr's own integration separately.
 
@@ -155,12 +156,28 @@ bun run extensions/sanitize-skill-names.ts
 bun run extensions/sanitize-skill-names.ts --apply
 ```
 
+### sandbox-dev
+
+A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
+
+- **Minimal permission model.** A short allow/confirm/deny policy over `tool_call` and `user_bash`, fail-closed when there is no UI. Patterns are case-insensitive substrings, or `/regex/` when slash-delimited. Config lives at `<agentDir>/sandbox-dev.json` and `<cwd>/.pi/sandbox-dev.json` (project wins); see [examples/sandbox-dev.json](examples/sandbox-dev.json).
+- **Explicit plan approval.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md` from disk, shows it, and blocks until the human types `approve`. Approval is bound to a plan hash, so editing the plan re-arms the gate.
+- **Single-outcome anchoring.** The plan's `Original Ask` becomes the anchored outcome; the supervisor restates it each turn, enforces a turn budget, and stops when `dev_outcome_met` records raw evidence.
+
+```text
+/dev-approve <task>   # approve a plan and start the implementation
+/dev-status           # show the anchored outcome and turn budget
+/dev-reset            # clear the in-session anchor
+```
+
+This is policy, not a security boundary: a permitted `bash` call can do anything the Pi process can. For real isolation, run Pi in a container or an OS sandbox. Fabric workers run headless with `--no-extensions`, so this extension is not active inside a worker.
+
 ## Migrating from loose extension files
 
 1. Finish any running Fabric workers.
 2. Back up your existing extensions and configuration.
 3. Move personal Fabric and Cloudflare configuration to the external paths described above.
-4. Move the old copies of these five extensions **outside** Pi's auto-discovery directories. Do not leave a second `pi-fabric/index.ts` under `~/.pi/agent/extensions/`.
+4. Move the old copies of these six extensions **outside** Pi's auto-discovery directories. Do not leave a second `pi-fabric/index.ts` under `~/.pi/agent/extensions/`.
 5. Install this package, then `/reload`.
 
 This prevents duplicate tool registrations and repeated prompt injection. Do not remove unrelated extensions such as herdr's integration. Package updates never intentionally modify your personal settings or migrate loose files automatically.

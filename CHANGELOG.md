@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Native `sandbox-dev` port: `skills/sandbox-dev/SKILL.md`, the `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` templates, and the `extensions/sandbox-dev` extension.
+- Minimal permission model: allow/confirm/deny rules over `tool_call` and `user_bash`, fail-closed without UI, configured by `sandbox-dev.json`.
+- Hash-bound explicit plan approval (`dev_request_approval`, `/dev-approve`) and single-outcome supervision with a turn budget (`dev_outcome_met`).
+- Unit and wiring tests for the policy, approval/outcome state, and the permission gate.
+
 ## 0.1.0
 
 Initial Git-installable package under PrashamTrivedi/Prasham-Pi-Extensions.

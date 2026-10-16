@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 assert.equal(pkg.repository.url, 'https://github.com/PrashamTrivedi/Prasham-Pi-Extensions.git');
-assert.equal(pkg.pi.extensions.length, 5);
+assert.equal(pkg.pi.extensions.length, 6);
 for (const entry of pkg.pi.extensions) {
   assert(existsSync(resolve(root, entry)), `Missing entry point: ${entry}`);
   assert(!/test|activity\.ts|ui\.ts/.test(entry), `Helper listed as extension: ${entry}`);
