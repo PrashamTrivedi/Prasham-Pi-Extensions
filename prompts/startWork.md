@@ -1,6 +1,6 @@
 ---
 description: Start or continue a planned task with branch management, checkpoint validation, and conventional commits.
-argument-hint: <task-directory-name> [branch: same|separate]
+argument-hint: "<task-directory-name> [branch: same|separate]"
 ---
 
 # Start Work

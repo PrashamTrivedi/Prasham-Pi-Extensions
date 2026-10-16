@@ -1,6 +1,6 @@
 ---
 description: Complete and finalize a task with build/test verification, a bounded review loop, validation artifacts, walkthrough, and a conventional commit.
-argument-hint: <task-directory-name> [work mode: backend|frontend]
+argument-hint: "<task-directory-name> [work mode: backend|frontend]"
 ---
 
 # Complete Work
