@@ -62,10 +62,11 @@ because a plan built on them would otherwise be wrong at the root.
 3. **Phase 0.1 is closed.** `check-package.mjs` no longer asserts a count and now also asserts
    each listed entry has a default export. Adding extension entries no longer requires editing
    the checker — so the cost of a new entry is now genuinely near-zero.
-4. **`cloudflare-ai-usage.ts` is on death row, not dead.** Its JSONL
-   (`~/.pi/agent/state/cloudflare-ai-usage.jsonl`) is the only Pi-side usage record today. The
-   plan retires it when `usage/` supersedes it. Anything I add that records usage must either
-   subsume that file or be explicit about the overlap.
+4. **`cloudflare-ai-usage.ts` is kept, not retired.** Its JSONL
+   (`~/.pi/agent/state/cloudflare-ai-usage.jsonl`) is the Pi-side Cloudflare record. It renders only
+   while a `cloudflare-workers-ai` model is active and clears its status otherwise, so it and
+   `usage/` (opencode-go) never compete for the same line. Anything I add that records usage stays
+   explicitly per-provider rather than merging the two.
 
 ---
 
@@ -123,7 +124,7 @@ displays.
 |---|---|---|---|---|
 | **1** | **Foundation** *(in flight, green)* | commit Specs A/B/C; resolve the dirty tree into two commits (sandbox-dev, then pi-mods foundation) | — | — |
 | **2** | **Hygiene** | 2.1 loose-extension cleanup · 2.2 `/skills doctor` | high / very low | 1 |
-| **3** | **Usage, completed** | `usage/index.ts` (status segment, `message_end` accounting, refresh timer, `/usage`), `usage/cloudflare.ts`, `usage/state.ts`, `usage.config.json`; retire `cloudflare-ai-usage.ts` | high / low | 1 |
+| **3** | **Usage, completed** | `usage/index.ts` (status segment, `message_end` accounting, refresh timer, `/usage`), `usage/opencode-go.ts`, `usage/config.ts`; `cloudflare-ai-usage.ts` kept and rendered only while its provider is active | high / low | 1 |
 | **4** | **Workbench + session observability** | `pet`, `statusline` rewrite, `cockpit` (right overlay, consumes `shared/ledger.ts`) + **ledger-server lifecycle** (auto-start, port, health, shutdown) · **4.1 MCP renderer** · **4.2 context breakdown** · **4.3 session ledger write side** | high / medium | 3 |
 | **5** | **Jev, in-process** | Phase 5 as written, with the reorder in 5.1. Needs `AgentId \| "pi"` in `~/.claude/skills/jev-harness/` | high / high | 1, 4 |
 | **6** | **Capability** | 6.1 model router · 6.2 MCP exposure · 6.3 nested classification · 6.4 provider interception · 6.5 `/handoff` + plan state | high / medium-high | 3, 4 |

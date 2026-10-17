@@ -23,6 +23,13 @@ Developing against the local package means the code you edit is the code Pi runs
 no install/update cycle, no version skew. Promotion is a deliberate second step,
 so a half-finished extension never leaks into the global configuration.
 
+## Model delegation rule
+
+When asked to use a different model (a second opinion, a review, a confirmation),
+**first try to spawn a subagent running that model** (`spawn_agents` with the model
+id/alias). Do **not** call a provider API directly with `curl`/`fetch` — the subagent
+path is the intended mechanism and carries the right context and permissions.
+
 ## Notes
 
 - `.pi/` is tracked so the rule travels with the repository.

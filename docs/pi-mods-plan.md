@@ -48,8 +48,9 @@ Provider usage reporting is **added**, and researching it replaced one stated no
 | `decorate` | It toasts a *denial*. With no gate there is no denial to toast. | `jev` lands — Jev's shell-safety is a denial source, so `decorate` moves into that phase. |
 | `shared/channels.ts` | Its one purpose was the ramp→gate channel. Dead weight with both gone. | `ramp` returns. |
 
-`cloudflare-ai-usage.ts` stays as it is until `usage/` supersedes it (Phase 2 exit), then it is removed and its
-config/state migrate.
+`cloudflare-ai-usage.ts` stays a first-class extension. It reports only while a `cloudflare-workers-ai` model is
+active and clears its status otherwise, so it and `usage/` coexist without competing for the same status line;
+they are deliberately not merged (see `docs/usage.md`).
 
 ---
 

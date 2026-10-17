@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **MIT license.** Added `LICENSE`; `package.json` is `MIT`; the README states the credit and notice requirement.
+- **Duck now mimics Claude Code's question flow.** The model returns a JSON array of questions (`header`, `question`, `options`, `allowOther`); the parser is tolerant (fences, prose, clamping to 4 questions and 4 options) and falls back to raw text. `/duck answer` opens a shared AskUserQuestion-style questionnaire and writes the answers into the editor for review; it never auto-sends and preserves an existing draft.
+- **Cockpit and duck are docked, not floating.** Both moved from `ctx.ui.custom({ overlay: true })` to a `setWidget(..., { placement: "aboveEditor" })` panel that reserves layout space instead of covering the transcript. The cockpit collapses to one line below 60 columns, since widgets have no `visible(width)` gate.
+- **Fabric: unrecorded models are unrestricted.** A model absent from the hierarchy may be spawned from any caller and may delegate to any model; ranks only order delegation among named models. A `/reload` now re-applies an edited hierarchy to the existing root, so a new session is no longer required.
+- **Cloudflare AI usage is kept, not retired.** It renders only while a `cloudflare-workers-ai` model is active and clears otherwise, so it and `usage/` never compete for the status line.
+- **One documentation guide per extension** under `docs/`, linked from the README.
 - Native `sandbox-dev` port: `skills/sandbox-dev/SKILL.md`, the `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` templates, and the `extensions/sandbox-dev` extension.
 - Minimal permission floor: allow/confirm/deny rules over `tool_call` and `user_bash`, fail-closed without UI, built in with no config file. Shell-safety pass 2 is deferred to `extensions/jev` and may only escalate.
 - Conversational plan gate (`dev_request_approval`, `/dev-approve`): `dev_request_approval` reads the plan and appends the gate to the chat. The human's reply in the transcript is the record; the extension records no approval and does not classify or intercept the reply. `/dev-approve` is an explicit human command that anchors the outcome and starts `/startWork`.

@@ -42,13 +42,20 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | Extension | What it does | Controls |
 | --- | --- | --- |
 | **Fabric** | Recursive agent teams, worktree isolation, live activity, comparisons, and inspection | `/team`, four agent tools |
+| **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
+| **Workbench** | Pet indicator, two-line footer, and a cockpit docked above the editor with context, provider usage, and recent decisions | `/cockpit`, `workbench.config.json` |
+| **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
 | **Project context** | Adds the working directory and a bounded directory tree to the system prompt | `PI_TREE_DEPTH`, `PI_TREE_MAX` |
 | **Recursive context** | Loads nested `AGENTS.md` / `CLAUDE.md` in trusted projects | `PI_RECURSIVE_CONTEXT_MAX`, `PI_RECURSIVE_CONTEXT_NAMES` |
-| **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data | `/cf-ai-usage`, external config |
+| **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data; renders only while a Workers AI model is active | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
 | **sandbox-dev** | Native plan → approve → implement → verify loop: minimal tool-permission floor, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools |
 
 The herdr-generated integration is intentionally not redistributed. Install herdr's own integration separately.
+
+## Documentation
+
+One guide per extension: [fabric](docs/fabric.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md).
 
 ## Fabric: delegate without losing the thread
 
@@ -87,7 +94,7 @@ Open `/team` for an accented, shaded overlay distinct from the chat behind it.
 - `agent_status`: inspect the tree and optional results.
 - `cancel_agents`: cancel a subtree.
 
-Each worker is a separate Pi process. Delegation uses the **same model or a lower-ranked configured model**. No task timeout or turn cap is imposed; concurrency is bounded by the configured active-agent count. Model calls can incur costs. Review patches and rerun tests before integrating anything.
+Each worker is a separate Pi process. Delegation follows the configured hierarchy: a model named in the hierarchy may spawn an equal or lower rank, and a model that is not named is unrestricted — it may be spawned from any caller and may delegate to any model. No task timeout or turn cap is imposed; concurrency is bounded by the configured active-agent count. Model calls can incur costs. Review patches and rerun tests before integrating anything.
 
 ### Configuration
 
@@ -99,7 +106,7 @@ mkdir -p ~/.pi/agent
 cp examples/fabric.config.json ~/.pi/agent/pi-fabric.config.json
 ```
 
-`PI_FABRIC_CONFIG` can point at a different configuration file. Configuration changes apply to new Fabric roots; existing runs retain their configuration snapshot. The live UI reconnects to a run after `/reload` when its reference is saved in the Pi session.
+`PI_FABRIC_CONFIG` can point at a different configuration file. A `/reload` re-applies config changes to the existing Fabric root, so a hierarchy edit takes effect on the next spawn without starting a new session. The live UI reconnects to a run after `/reload` when its reference is saved in the Pi session.
 
 Results, patches, activity snapshots, and worktrees live under the system temporary directory, in `pi-fabric/<root-id>/`. They are local—not uploaded by the preview or package. Temporary storage is not a backup. Remove worktrees through Git after reviewing or discarding their changes; deleting directories alone leaves worktree metadata behind.
 
@@ -214,4 +221,4 @@ The HTML preview works offline and uses simulated data; it never starts workers 
 
 ## License
 
-A license has not yet been selected. The package is marked `UNLICENSED`; public availability does not grant an open-source redistribution license. Do not assume MIT or another license until the repository owner adds one.
+[MIT](./LICENSE) © Prasham Trivedi. Use, modify, and redistribute freely, including commercially; keep the copyright and permission notice in any copy or substantial portion. There is no warranty.
