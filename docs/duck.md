@@ -44,3 +44,15 @@ Any draft already in the editor is preserved; the block is appended.
 - `extensions/duck/questions.ts` — tolerant parse and clamping.
 - `extensions/duck/answers.ts` — questionnaire mapping and the editor block.
 - `extensions/shared/questionnaire.ts` — the reusable AskUserQuestion modal.
+
+## Manual checks (TUI)
+
+UI rendering is verified by hand rather than by unit tests:
+
+- `/duck <focus>` shows a docked panel above the editor that does **not** cover transcript lines.
+- The spinner animates while the model answers, then the questions replace it.
+- `/duck answer` opens the tabbed questionnaire; Submit fixes the answers in place.
+- On Submit, the composed block is appended to the editor, and an existing draft is preserved.
+- `/duck answer` with no structured questions notifies instead of opening a modal.
+- `/duck` toggles the panel closed; `/duck close` closes it directly.
+- Regular and fullscreen modes both render; `print` mode installs no widget and does not throw.

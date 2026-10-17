@@ -50,3 +50,12 @@ and removed on `session_shutdown`.
 
 With every flag `false` the extension loads and does nothing. In `print`/`rpc` without a UI,
 no widget is installed. A missing config file falls back to defaults.
+
+## Manual checks (TUI)
+
+- At session start the cockpit appears docked above the editor without covering the transcript.
+- `/cockpit` hides it, and `/cockpit` again restores it.
+- Below 60 columns the cockpit collapses to a single summary line.
+- Provider usage windows fill in while opencode-go is the active model.
+- With `cockpit.enabled: false`, nothing is docked.
+- The pet animation and two-line footer render; switching branches repaints the footer.
