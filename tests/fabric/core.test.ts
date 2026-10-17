@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, requestedRule, resolveConfig } from "../../extensions/fabric/index.ts";
+import { buildChildArgs, capturePatch, effectiveRule, reconcileRootConfig, requestedRule, resolveConfig, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -43,6 +43,30 @@ test("empty hierarchy permits only the exact current model; configured ranks per
   const child = requestedRule(configured, "p/high", "low")!;
   expect(caller[1].rank).toBeGreaterThanOrEqual(child[1].rank);
   expect(requestedRule(configured, "p/high", "high")?.[1].id).toBe("p/high");
+});
+
+test("models absent from the hierarchy are unrestricted in both directions", () => {
+  const configured = { maxActiveAgents: 6, models: { high: { id: "p/high", rank: 2 }, low: { id: "p/low", rank: 1 } } };
+  // An unrecorded caller can delegate to any model.
+  const unrecordedCaller = effectiveRule(configured, "p/mystery")!;
+  expect(unrecordedCaller[1]).toMatchObject({ id: "p/mystery", rank: Number.MAX_SAFE_INTEGER, description: "unrecorded" });
+  expect(requestedRule(configured, "p/mystery", "high")?.[1].rank).toBeLessThanOrEqual(unrecordedCaller[1].rank);
+  // An unrecorded child can be spawned by any caller.
+  const unrecordedChild = requestedRule(configured, "p/low", "p/mystery")!;
+  expect(unrecordedChild[1]).toMatchObject({ id: "p/mystery", rank: 0, description: "unrecorded" });
+  expect(unrecordedChild[1].rank).toBeLessThanOrEqual(effectiveRule(configured, "p/low")![1].rank);
+  // An empty caller model still resolves to nothing rather than an unranked rule.
+  expect(effectiveRule(configured, "")).toBeUndefined();
+});
+
+test("a restored root adopts an edited hierarchy and keeps its agents", () => {
+  const before: FabricConfig = { maxActiveAgents: 6, models: {} };
+  const after: FabricConfig = { maxActiveAgents: 6, models: { high: { id: "p/high", rank: 2 } } };
+  const state: FabricState = { rootId: "root", repo: "/repo", createdAt: "t", config: before, agents: {} };
+  expect(reconcileRootConfig(state, before)).toBe(state);
+  const updated = reconcileRootConfig(state, after);
+  expect(updated.config).toEqual(after);
+  expect(updated).toMatchObject({ rootId: "root", repo: "/repo", createdAt: "t", agents: {} });
 });
 
 test("child args disable discovery and explicitly load the exact Fabric entry", () => {

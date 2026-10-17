@@ -32,7 +32,7 @@ type FabricAgent = {
   baseCommit?: string;
   error?: string;
 };
-type FabricState = { rootId: string; repo: string; createdAt: string; config: FabricConfig; agents: Record<string, FabricAgent> };
+export type FabricState = { rootId: string; repo: string; createdAt: string; config: FabricConfig; agents: Record<string, FabricAgent> };
 
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const LEGACY_CONFIG_PATH = join(dirname(ENTRY_PATH), "config.json");
@@ -135,13 +135,32 @@ export function modelRule(config: FabricConfig, model: string): [string, ModelRu
   const matches = bare ? entries.filter(([, rule]) => !rule.id.includes("/") && rule.id === bare) : [];
   return matches.length === 1 ? matches[0] : undefined;
 }
+/**
+ * Models absent from the hierarchy are unrestricted: as a caller an unrecorded
+ * model may delegate anywhere, and as a child it may be spawned from any caller.
+ * Ranks only order delegation between models the hierarchy names.
+ */
+const UNRANKED_CALLER_RANK = Number.MAX_SAFE_INTEGER;
+const UNRANKED_CHILD_RANK = 0;
+
 export function effectiveRule(config: FabricConfig, model: string): [string, ModelRule] | undefined {
-  if (Object.keys(config.models).length === 0 && model) return [model, { id: model, rank: 0, description: "current model" }];
-  return modelRule(config, model);
+  if (!model) return undefined;
+  if (Object.keys(config.models).length === 0) return [model, { id: model, rank: UNRANKED_CHILD_RANK, description: "current model" }];
+  return modelRule(config, model) ?? [model, { id: model, rank: UNRANKED_CALLER_RANK, description: "unrecorded" }];
 }
 export function requestedRule(config: FabricConfig, callerModel: string, requestedModel: string): [string, ModelRule] | undefined {
-  if (Object.keys(config.models).length === 0) return requestedModel === callerModel ? [callerModel, { id: callerModel, rank: 0 }] : undefined;
-  return modelRule(config, requestedModel);
+  if (Object.keys(config.models).length === 0) return requestedModel === callerModel ? [callerModel, { id: callerModel, rank: UNRANKED_CHILD_RANK }] : undefined;
+  return modelRule(config, requestedModel) ?? [requestedModel, { id: requestedModel, rank: UNRANKED_CHILD_RANK, description: "unrecorded" }];
+}
+
+/**
+ * A root outlives an edit to the hierarchy: sessions restore their root from a
+ * `pi-fabric-root` entry and keep the config snapshotted when that root was made.
+ * Re-applying the resolved config lets `/reload` after a hierarchy edit take effect
+ * without starting a new session. Agents already recorded on the root are kept.
+ */
+export function reconcileRootConfig(state: FabricState, config: FabricConfig): FabricState {
+  return JSON.stringify(state.config) === JSON.stringify(config) ? state : { ...state, config };
 }
 function currentModel(ctx: ExtensionContext): string {
   const fromEnv = process.env[MODEL_ENV];
@@ -316,9 +335,18 @@ export default function piFabric(pi: ExtensionAPI) {
     } };
   }
   function ensureRoot(ctx: ExtensionContext): string {
+    // Drop a restore whose state was cleaned up, then re-apply the resolved policy
+    // so a reload after a config edit is honoured by the existing root.
+    if (rootId && !existsSync(statePath(rootId))) rootId = "";
     if (!rootId) {
       rootId = createRoot(ctx.cwd, configResolution.config);
       pi.appendEntry("pi-fabric-root", { rootId });
+    } else {
+      try {
+        const state = loadState(rootId);
+        const reconciled = reconcileRootConfig(state, configResolution.config);
+        if (reconciled !== state) saveState(rootId, reconciled);
+      } catch { /* leave the root untouched; a missing or corrupt state is replaced on next createRoot */ }
     }
     startRefresh(ctx);
     return rootId;
@@ -440,14 +468,12 @@ export default function piFabric(pi: ExtensionAPI) {
         const state = loadState(root);
         const callerModel = currentModel(ctx);
         const caller = effectiveRule(state.config, callerModel);
-        if (!caller) throw new Error(`Current model '${callerModel || "unknown"}' is not in Pi Fabric config${configResolution.path ? ` (${configResolution.path})` : ""}.`);
+        if (!caller) throw new Error("Pi Fabric cannot determine the current model; run spawn_agents from a session with an active model.");
         const parentId = activeAgentId();
         const agents: FabricAgent[] = [];
         for (const request of params.agents) {
           const child = requestedRule(state.config, callerModel, request.model);
-          if (!child) throw new Error(Object.keys(state.config.models).length === 0
-            ? `No Fabric model hierarchy is configured; child model must exactly match the current model '${callerModel}'.`
-            : `Unknown Fabric model '${request.model}'.`);
+          if (!child) throw new Error(`No Fabric model hierarchy is configured; child model must exactly match the current model '${callerModel}'.`);
           if (child[1].rank > caller[1].rank) throw new Error(`${caller[0]} cannot spawn higher-ranked ${child[0]}.`);
           const id = randomUUID();
           const label = request.label?.trim() || request.task.replace(/\s+/g, " ").slice(0, 42);

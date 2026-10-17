@@ -35,7 +35,7 @@ With no model hierarchy, a worker may spawn only the exact model currently runni
 }
 ```
 
-Higher ranks may spawn equal or lower ranks. Aliases and full IDs are accepted. Each configured `id` is passed to `pi --model`.
+Higher ranks may spawn equal or lower ranks. Aliases and full IDs are accepted. Each configured `id` is passed to `pi --model`. Models absent from the hierarchy are unrestricted: they may be spawned from any caller and may themselves delegate to any model, so ranks only order delegation among the models you name.
 
 ## Safety and patches
 

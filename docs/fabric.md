@@ -11,9 +11,9 @@ When no model hierarchy is configured, a worker may spawn only the exact current
 3. Legacy `config.json` beside Fabric's entry point, if present.
 4. Built-in same-model defaults.
 
-An explicit missing file, invalid JSON, or invalid configuration fails clearly rather than silently changing policy. User config should live outside the installed package. Config is read when the extension loads and snapshotted when a run is created; reload after changes and use a new session for a new hierarchy.
+An explicit missing file, invalid JSON, or invalid configuration fails clearly rather than silently changing policy. User config should live outside the installed package. Config is read when the extension loads. A root keeps the policy it was created with, but a reload re-applies the resolved config to the existing root, so a hierarchy edit takes effect on the next spawn without starting a new session.
 
-The [example configuration](../examples/fabric.config.json) uses placeholder model IDs. Replace them with IDs available in your Pi installation (`pi --list-models`). The aliases are yours to choose. A model's numerical rank determines which models it can delegate to; larger ranks may delegate to equal or smaller ranks. The current root model must appear in an explicitly configured hierarchy.
+The [example configuration](../examples/fabric.config.json) uses placeholder model IDs. Replace them with IDs available in your Pi installation (`pi --list-models`). The aliases are yours to choose. A model's numerical rank determines which models it can delegate to; larger ranks may delegate to equal or smaller ranks. The current root model does not have to appear in the hierarchy: models you do not name are unrestricted — they can be spawned from any caller and can delegate to any model. Naming a model is what puts it in the ordered hierarchy.
 
 Example order:
 
