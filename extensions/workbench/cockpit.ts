@@ -1,14 +1,16 @@
 /**
- * cockpit — a top-right, non-capturing overlay showing context, tokens, provider
- * usage, and recent Jev decisions. The ledger is read over HTTP via
- * `shared/ledger.ts`; the extension never spawns the server.
+ * cockpit — a docked widget above the editor showing context, tokens, provider
+ * usage, and recent Jev decisions. It reserves layout space instead of floating over
+ * the transcript (DeepSeek Pro reviewed the docking change). The ledger is read over
+ * HTTP via `shared/ledger.ts`; the extension never spawns the server.
  *
- * Presentation goes through `shared/panel.ts`. The panel docks in the top-right
- * corner with a narrow footprint so it does not cover mid-screen transcript
- * lines, and its refresh fetches the ledger and provider usage concurrently
- * behind an in-flight guard so bursts of `tool_result` cannot stall it.
+ * Presentation goes through `shared/panel.ts`. The widget has no `visible(width)`
+ * gate, so it collapses to a single summary line below 60 columns, and its refresh
+ * fetches the ledger and provider usage concurrently behind an in-flight guard so
+ * bursts of `tool_result` cannot stall it.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { recentCalls } from "../shared/ledger.ts";
 import { meter, renderPanel, type PanelTheme } from "../shared/panel.ts";
 import type { ProviderUsage, UsageWindow } from "../shared/usage.ts";
@@ -132,9 +134,30 @@ export function renderCockpitPanel(
   }).lines;
 }
 
+const WIDGET_KEY = "cockpit";
+
+/**
+ * Docked widget lines. Widgets get no `visible(width)` gate, so a full panel would
+ * consume rows on a narrow terminal; below 60 columns this collapses to one line.
+ */
+export function renderCockpitWidget(
+  theme: PanelTheme,
+  width: number,
+  input: CockpitInput,
+  now: number = Date.now(),
+): string[] {
+  if (width < 60) {
+    const percent = input.percent === null ? "?" : `${Math.round(input.percent)}%`;
+    const window = input.usage?.windows[0];
+    const usage = window ? ` · ${window.label} ${window.percent ?? "?"}%` : input.usage?.error ? " · usage error" : "";
+    return [truncateToWidth(theme.fg("accent", "◈ ") + theme.fg("muted", `ctx ${percent} · ${formatTokens(input.tokens)} tok${usage}`), Math.max(1, width))];
+  }
+  return renderCockpitPanel(theme, width, input, now);
+}
+
 export function registerCockpit(pi: ExtensionAPI, getConfig: () => WorkbenchConfig): void {
-  let handle: { hide(): void } | undefined;
-  let tui: { requestRender(force?: boolean): void } | undefined;
+  let visible = false;
+  let requestRender: (() => void) | undefined;
   let context: ExtensionContext | undefined;
   let latest: CockpitInput = { percent: null, tokens: 0, decisions: [] };
   let refreshing = false;
@@ -174,69 +197,63 @@ export function registerCockpit(pi: ExtensionAPI, getConfig: () => WorkbenchConf
         decisions: ledger.rows.map((row) => `${String(row.decision ?? "?")} · ${String(row.tool ?? "")}`.trim()),
         ledgerError: ledger.error,
       };
-      tui?.requestRender();
+      requestRender?.();
     } finally {
       refreshing = false;
     }
   };
 
-  const open = (ctx: ExtensionContext): void => {
+  const show = (ctx: ExtensionContext): void => {
     if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
     context = ctx;
-    void ctx.ui
-      .custom(
-        (t, theme) => {
-          tui = t;
+    if (!visible) {
+      visible = true;
+      ctx.ui.setWidget(
+        WIDGET_KEY,
+        (tui, theme) => {
+          requestRender = () => tui.requestRender();
           return {
-            render: (width: number): string[] => renderCockpitPanel(theme, width, latest),
+            render: (width: number): string[] => renderCockpitWidget(theme, width, latest),
             invalidate: () => {},
           };
         },
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: "top-right",
-            width: "32%",
-            maxHeight: "55%",
-            margin: { top: 1, right: 1 },
-            nonCapturing: true,
-            visible: (width) => width >= 120,
-          },
-          onHandle: (h) => {
-            handle = h;
-          },
-        },
-      )
-      .finally(() => {
-        handle = undefined;
-        tui = undefined;
-      });
+        { placement: "aboveEditor" },
+      );
+    }
     void refresh();
   };
 
+  const hide = (ctx: ExtensionContext): void => {
+    if (!visible) return;
+    visible = false;
+    requestRender = undefined;
+    ctx.ui.setWidget(WIDGET_KEY, undefined);
+  };
+
   pi.registerCommand("cockpit", {
-    description: "Toggle the workbench cockpit overlay",
+    description: "Toggle the docked workbench cockpit",
     handler: async (_args, ctx) => {
       if (!getConfig().cockpit.enabled) {
         ctx.ui.notify("cockpit disabled in workbench.config.json", "warning");
         return;
       }
-      if (handle) {
-        handle.hide();
-        return;
-      }
-      open(ctx);
+      if (visible) hide(ctx);
+      else show(ctx);
     },
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    if (getConfig().cockpit.enabled && ctx.hasUI) show(ctx);
   });
 
   const onEvent = async (ctx: ExtensionContext): Promise<void> => {
     context = ctx;
-    if (handle) await refresh();
+    if (visible) await refresh();
   };
 
   pi.on("turn_end", async (_event, ctx) => onEvent(ctx));
   pi.on("tool_result", async (_event, ctx) => onEvent(ctx));
-  pi.on("session_shutdown", async () => {
-    handle?.hide();
+  pi.on("session_shutdown", async (_event, ctx) => {
+    hide(ctx);
   });
 }

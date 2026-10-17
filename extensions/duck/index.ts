@@ -1,22 +1,25 @@
 /**
- * `/duck` — an interactive, questions-only second opinion on the current plan,
- * via an in-process nested call (`ctx.modelRegistry.streamSimple`). No subprocess.
+ * `/duck` — a questions-only second opinion on the current plan, via an in-process
+ * nested call (`ctx.modelRegistry.streamSimple`). No subprocess, no floating overlay.
  *
- * The overlay opens immediately (spinner + live streaming text) as a themed
- * panel, scrolls with arrows/j/k/PgUp/PgDn/g/G/Home/End, follows the stream until
- * the user scrolls, and closes with `esc`/`q` or by running `/duck` again.
- *
- * Key handling goes through pi-tui's `matchesKey`, so it works on terminals that
- * negotiate the Kitty keyboard protocol as well as legacy terminals. Raw escape
- * comparisons break under Kitty CSI-u encodings and are deliberately avoided.
+ * The panel is a docked `setWidget` above the editor, so it reserves layout space and
+ * never covers the transcript (DeepSeek Pro reviewed and endorsed this over a
+ * side-rail custom editor). Widgets take no keyboard input, so the interaction lives
+ * in commands: `/duck` runs or closes, `/duck answer` opens the AskUserQuestion-style
+ * questionnaire for the questions the model returned.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
-import { renderPanel, type PanelLayout, type PanelTheme } from "../shared/panel.ts";
+import { renderPanel, type PanelTheme } from "../shared/panel.ts";
+import { runQuestionnaire } from "../shared/questionnaire.ts";
+import { composeDuckAnswers, toQuestionnaireQuestions } from "./answers.ts";
 import { buildDuckPrompt } from "./prompt.ts";
+import { parseDuckQuestions, type DuckQuestion } from "./questions.ts";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TITLE = "duck";
+const WIDGET_KEY = "duck";
+/** Question rows the docked panel shows before it stops (widgets cannot scroll). */
+const WIDGET_BODY_LIMIT = 14;
 
 function textOfMessage(message: unknown): string {
   if (typeof message !== "object" || message === null) return "";
@@ -113,11 +116,6 @@ export function nestedHeaders(
   return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
 }
 
-export type DuckAction = "close" | "lineUp" | "lineDown" | "pageUp" | "pageDown" | "home" | "end";
-
-/** Maximum questions shown; the prompt asks the model for the same cap. */
-export const DUCK_MAX_QUESTIONS = 5;
-
 const QUESTION_MARKER = /^\s*(?:[-*•]|\d+[.)]|Q\d*\s*[:.)])\s*/i;
 
 /** True when a line reads as a question (a list marker or a trailing `?`). */
@@ -134,11 +132,10 @@ export interface DuckCap {
 }
 
 /**
- * Keep at most `max` questions, preserving the lines of the kept ones. Text with
- * no recognisable question lines is returned unchanged, so an unstructured
- * answer is never mangled.
+ * Keep at most `max` questions in the free-text fallback, preserving the lines of
+ * the kept ones. Text with no recognisable question lines is returned unchanged.
  */
-export function capDuckQuestions(text: string, max: number = DUCK_MAX_QUESTIONS): DuckCap {
+export function capDuckQuestions(text: string, max = 5): DuckCap {
   const lines = text.split("\n");
   let seen = 0;
   let cut = -1;
@@ -153,207 +150,171 @@ export function capDuckQuestions(text: string, max: number = DUCK_MAX_QUESTIONS)
   return { text: lines.slice(0, cut + 1).join("\n"), omitted };
 }
 
-/**
- * Map one terminal input chunk to a panel action. `matchesKey` understands both
- * legacy sequences (`\x1b[A`) and Kitty-protocol encodings (`\x1b[1;1A`,
- * `\x1b[27u`), which is what the previous raw-byte comparisons missed.
- */
-export function duckKeyAction(data: string): DuckAction | undefined {
-  if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") return "close";
-  if (matchesKey(data, "up") || data === "k") return "lineUp";
-  if (matchesKey(data, "down") || data === "j") return "lineDown";
-  if (matchesKey(data, "pageUp")) return "pageUp";
-  if (matchesKey(data, "pageDown")) return "pageDown";
-  if (matchesKey(data, "home") || data === "g") return "home";
-  if (matchesKey(data, "end") || data === "G") return "end";
-  return undefined;
-}
-
-/** Body viewport height for a terminal with `terminalRows` rows. */
-export function duckBodyRows(terminalRows: number): number {
-  // The frame adds four chrome rows (top, separator, footer, bottom); keep the
-  // whole panel inside the overlay's 80% maxHeight.
-  return Math.max(4, Math.min(Math.floor(terminalRows * 0.8) - 4, 24));
-}
-
-export interface DuckPanelState {
+export interface DuckView {
   text: string;
-  view: "asking" | "done";
+  phase: "asking" | "done";
   usage?: { input?: number; output?: number };
   error?: string;
   spinner: string;
-  scroll: number;
-  /** Follow the newest output until the user scrolls away. */
-  follow: boolean;
-  limit: number;
+  /** Structured questions recovered from a completed answer. */
+  questions: DuckQuestion[];
 }
 
-function duckStatus(state: DuckPanelState): string {
-  if (state.error !== undefined) return "error";
-  if (state.view === "asking") return `${state.spinner} asking…`;
-  return `in ${state.usage?.input ?? 0} / out ${state.usage?.output ?? 0}`;
+function duckStatus(view: DuckView): string {
+  if (view.error !== undefined) return "error";
+  if (view.phase === "asking") return `${view.spinner} asking…`;
+  const structured = view.questions.length > 0 ? `${view.questions.length} questions · ` : "";
+  return `${structured}in ${view.usage?.input ?? 0} / out ${view.usage?.output ?? 0}`;
 }
 
-function duckBody(state: DuckPanelState): { rows: string[]; omitted: number } {
-  if (state.error !== undefined) return { rows: [`duck failed: ${state.error}`], omitted: 0 };
-  if (state.text.length > 0) {
-    const capped = capDuckQuestions(state.text);
-    return { rows: capped.text.split("\n"), omitted: capped.omitted };
+/** Body rows for the docked panel. Pure; structured questions win over raw text. */
+export function duckRows(view: DuckView): string[] {
+  if (view.error !== undefined) return [`duck failed: ${view.error}`];
+  if (view.questions.length > 0) {
+    const rows: string[] = [];
+    for (const question of view.questions) {
+      rows.push(`• ${question.header} — ${question.question}`);
+      if (question.options.length > 0) rows.push(`    ${question.options.map((option) => option.label).join(" · ")}`);
+    }
+    return rows;
   }
-  return {
-    rows: [state.view === "asking" ? "waiting for the model…" : "(the model returned no questions)"],
-    omitted: 0,
-  };
+  if (view.text.length > 0) {
+    const capped = capDuckQuestions(view.text);
+    return capped.omitted > 0 ? [...capped.text.split("\n"), "", `…and ${capped.omitted} more`] : capped.text.split("\n");
+  }
+  return [view.phase === "asking" ? "waiting for the model…" : "(the model returned no questions)"];
 }
 
-/** Compose the duck panel, including the scroll-range hint in the footer. */
-export function buildDuckPanel(
-  theme: PanelTheme,
-  state: DuckPanelState,
-  width: number,
-  label: string,
-): PanelLayout {
-  const right = `${label} · ${duckStatus(state)}`;
-  const { rows, omitted } = duckBody(state);
-  const body =
-    omitted > 0
-      ? [...rows, "", theme.fg("dim", `…and ${omitted} more questions (capped at ${DUCK_MAX_QUESTIONS})`)]
-      : rows;
-  const offset = state.follow ? Number.MAX_SAFE_INTEGER : state.scroll;
-  const probe = renderPanel(theme, width, { title: TITLE, right, body, offset, limit: state.limit });
-  const range =
-    probe.total > state.limit
-      ? ` · lines ${probe.offset + 1}–${Math.min(probe.total, probe.offset + state.limit)} of ${probe.total}`
-      : "";
-  const footer = `↑↓ scroll · PgUp/PgDn · g/G · esc close${range}`;
-  return renderPanel(theme, width, { title: TITLE, right, body, footer, offset: probe.offset, limit: state.limit });
+/** Compose the docked duck panel. Docked above the editor; cannot take focus. */
+export function buildDuckPanel(theme: PanelTheme, view: DuckView, width: number, label: string): string[] {
+  const footer =
+    view.questions.length > 0 && view.phase === "done"
+      ? "/duck answer · /duck to close"
+      : "/duck to close";
+  return renderPanel(theme, width, {
+    title: TITLE,
+    right: `${label} · ${duckStatus(view)}`,
+    body: duckRows(view),
+    footer,
+    limit: WIDGET_BODY_LIMIT,
+  }).lines;
 }
 
-let activeDuck: (() => void) | undefined;
+let live: { view: DuckView; label: string } | undefined;
+let requestRender: (() => void) | undefined;
+let spinner: ReturnType<typeof setInterval> | undefined;
+
+function stopSpinner(): void {
+  if (spinner !== undefined) {
+    clearInterval(spinner);
+    spinner = undefined;
+  }
+}
+
+function close(ctx: ExtensionContext): void {
+  stopSpinner();
+  live = undefined;
+  requestRender = undefined;
+  ctx.ui.setWidget(WIDGET_KEY, undefined);
+}
+
+function install(ctx: ExtensionContext): void {
+  ctx.ui.setWidget(
+    WIDGET_KEY,
+    (tui, theme) => {
+      requestRender = () => tui.requestRender();
+      return {
+        render: (width: number) => (live ? buildDuckPanel(theme, live.view, width, live.label) : []),
+        invalidate: () => {},
+      };
+    },
+    { placement: "aboveEditor" },
+  );
+}
+
+function run(ctx: ExtensionContext, focus: string): void {
+  const model = ctx.model;
+  if (!model) {
+    ctx.ui.notify("duck: no active model", "error");
+    return;
+  }
+  const plan = latestAssistantText(ctx) || "(no plan in this session yet)";
+  const view: DuckView = { text: "", phase: "asking", spinner: SPINNER[0]!, questions: [] };
+  live = { view, label: `${model.provider}/${model.id}` };
+  install(ctx);
+  stopSpinner();
+  spinner = setInterval(() => {
+    if (view.phase !== "asking") return;
+    view.spinner = SPINNER[(SPINNER.indexOf(view.spinner) + 1) % SPINNER.length]!;
+    requestRender?.();
+  }, 120);
+
+  void (async () => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const headers = nestedHeaders(model, sessionId);
+    try {
+      const stream = ctx.modelRegistry.streamSimple(
+        model,
+        { messages: [{ role: "user", content: buildDuckPrompt(plan, focus), timestamp: Date.now() }] },
+        headers ? { sessionId, headers } : { sessionId },
+      );
+      const result = await accumulateDuck(stream, (partial) => {
+        view.text = partial;
+        requestRender?.();
+      });
+      view.usage = result.usage;
+      view.error = result.error;
+      if (result.error === undefined) view.questions = parseDuckQuestions(result.text).questions;
+    } catch (error) {
+      view.error = error instanceof Error ? error.message : String(error);
+    } finally {
+      view.phase = "done";
+      stopSpinner();
+      requestRender?.();
+    }
+  })();
+}
+
+async function answer(ctx: ExtensionContext): Promise<void> {
+  const questions = live?.view.questions ?? [];
+  if (questions.length === 0) {
+    ctx.ui.notify("duck: no structured questions yet — run /duck first", "warning");
+    return;
+  }
+  const answers = await runQuestionnaire(ctx, toQuestionnaireQuestions(questions));
+  if (!answers || answers.length === 0) return;
+  // `setEditorText` replaces, so keep whatever draft is already there.
+  const existing = ctx.ui.getEditorText();
+  const block = composeDuckAnswers(questions, answers);
+  ctx.ui.setEditorText(existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${block}` : block);
+  ctx.ui.notify("duck: answers added to the editor", "info");
+}
 
 export default function duck(pi: ExtensionAPI) {
   pi.registerCommand("duck", {
-    description: "Ask a questions-only second opinion about the current plan",
+    description: "Ask a questions-only second opinion, docked above the editor",
     handler: async (args, ctx) => {
-      // Running /duck again closes the open panel (keyboard-independent escape hatch).
-      if (activeDuck) {
-        activeDuck();
+      if (!ctx.hasUI) return;
+      const focus = args.trim();
+      if (focus === "close") {
+        close(ctx);
         return;
       }
-      const model = ctx.model;
-      if (!model) {
-        ctx.ui.notify("duck: no active model", "error");
+      if (focus === "answer") {
+        await answer(ctx);
         return;
       }
-      if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
-
-      const plan = latestAssistantText(ctx) || "(no plan in this session yet)";
-      const label = `${model.provider}/${model.id}`;
-      let closed = false;
-
-      await ctx.ui
-        .custom<void>(
-          (tui, theme, _keybindings, done) => {
-            const state: DuckPanelState = {
-              text: "",
-              view: "asking",
-              spinner: SPINNER[0],
-              scroll: 0,
-              follow: true,
-              limit: duckBodyRows(tui.terminal.rows),
-            };
-            const render = (): void => tui.requestRender();
-            const spinner = setInterval(() => {
-              if (state.view !== "asking") return;
-              const index = (SPINNER.indexOf(state.spinner) + 1) % SPINNER.length;
-              state.spinner = SPINNER[index];
-              render();
-            }, 120);
-            const close = (): void => {
-              if (closed) return;
-              closed = true;
-              clearInterval(spinner);
-              done();
-            };
-            activeDuck = close;
-
-            const scrollBy = (delta: number): void => {
-              state.follow = false;
-              state.scroll = Math.max(0, state.scroll + delta);
-              render();
-            };
-
-            void (async () => {
-              const sessionId = ctx.sessionManager.getSessionId();
-              const headers = nestedHeaders(model, sessionId);
-              try {
-                const stream = ctx.modelRegistry.streamSimple(
-                  model,
-                  { messages: [{ role: "user", content: buildDuckPrompt(plan, args), timestamp: Date.now() }] },
-                  headers ? { sessionId, headers } : { sessionId },
-                );
-                const result = await accumulateDuck(stream, (partial) => {
-                  state.text = partial;
-                  render();
-                });
-                state.usage = result.usage;
-                state.error = result.error;
-              } catch (error) {
-                state.error = error instanceof Error ? error.message : String(error);
-              } finally {
-                state.view = "done";
-                clearInterval(spinner);
-                render();
-              }
-            })();
-
-            return {
-              render: (width: number): string[] => {
-                state.limit = duckBodyRows(tui.terminal.rows);
-                const layout = buildDuckPanel(theme, state, width, label);
-                state.scroll = layout.offset;
-                return layout.lines;
-              },
-              handleInput: (data: string): void => {
-                const action = duckKeyAction(data);
-                if (action === undefined) return;
-                if (action === "close") {
-                  close();
-                } else if (action === "lineUp") {
-                  scrollBy(-1);
-                } else if (action === "lineDown") {
-                  scrollBy(1);
-                } else if (action === "pageUp") {
-                  scrollBy(-state.limit);
-                } else if (action === "pageDown") {
-                  scrollBy(state.limit);
-                } else if (action === "home") {
-                  state.follow = false;
-                  state.scroll = 0;
-                  render();
-                } else if (action === "end") {
-                  state.follow = true;
-                  render();
-                }
-              },
-              invalidate: () => {},
-              dispose: () => clearInterval(spinner),
-            };
-          },
-          {
-            overlay: true,
-            overlayOptions: {
-              anchor: "right-center",
-              width: "50%",
-              minWidth: 40,
-              maxHeight: "80%",
-              visible: (width) => width >= 80,
-            },
-          },
-        )
-        .finally(() => {
-          activeDuck = undefined;
-        });
+      if (focus.length === 0 && live) {
+        close(ctx);
+        return;
+      }
+      run(ctx, focus);
     },
+  });
+
+  pi.on("session_shutdown", async () => {
+    stopSpinner();
+    live = undefined;
+    requestRender = undefined;
   });
 }

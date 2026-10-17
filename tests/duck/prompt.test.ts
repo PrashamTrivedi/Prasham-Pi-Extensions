@@ -2,17 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { buildDuckPrompt } from "../../extensions/duck/prompt.ts";
 
 describe("buildDuckPrompt", () => {
-  test("demands questions only and embeds the plan", () => {
+  test("demands a JSON array of questions and embeds the plan", () => {
     const prompt = buildDuckPrompt("PLAN-BODY", "");
-    expect(prompt).toContain("QUESTIONS ONLY");
+    expect(prompt).toContain("Return ONLY a JSON array");
+    expect(prompt).toContain("Do not answer them");
     expect(prompt).toContain("PLAN-BODY");
-    expect(prompt).toContain("Focus: the plan below");
+    expect(prompt).toContain("Focus: the work below");
   });
 
-  test("caps the answer at five questions", () => {
+  test("states the four-question cap and the option shape", () => {
     const prompt = buildDuckPrompt("x", "");
-    expect(prompt).toContain("at most 5 questions");
-    expect(prompt).toContain("never more than 5");
+    expect(prompt).toContain("1 to 4 questions");
+    expect(prompt).toContain("2 to 4 options per question");
+    expect(prompt).toContain('"header"');
+    expect(prompt).toContain('"allowOther"');
   });
 
   test("uses a provided focus", () => {

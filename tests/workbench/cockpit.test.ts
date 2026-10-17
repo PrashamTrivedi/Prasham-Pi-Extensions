@@ -4,6 +4,7 @@ import {
   buildCockpitSections,
   formatReset,
   renderCockpitPanel,
+  renderCockpitWidget,
   type CockpitInput,
 } from "../../extensions/workbench/cockpit.ts";
 import type { PanelTheme } from "../../extensions/shared/panel.ts";
@@ -123,6 +124,17 @@ describe("renderCockpitPanel", () => {
         expect(visibleWidth(line)).toBe(width);
       }
     }
+  });
+
+  test("collapses to one fitting line on a narrow dock", () => {
+    const lines = renderCockpitWidget(plain, 40, populated);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("ctx 62%");
+    expect(visibleWidth(lines[0]!)).toBeLessThanOrEqual(40);
+  });
+
+  test("renders the full panel on a wide dock", () => {
+    expect(renderCockpitWidget(plain, 100, populated)).toEqual(renderCockpitPanel(plain, 100, populated));
   });
 });
 
