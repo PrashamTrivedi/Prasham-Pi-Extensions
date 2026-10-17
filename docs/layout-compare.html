@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi cockpit · layout A vs B</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --panel: #181825;
+    --accent: #cba6f7;
+    --muted: #6c7086;
+    --success: #a6e3a1;
+    --warning: #f9e2af;
+    --error: #f38ba8;
+    --fg: #cdd6f4;
+    --border: #45475a;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    background: radial-gradient(1200px 600px at 50% -10%, #232338 0%, #11111b 55%, #0c0c14 100%);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 26px 22px 60px; }
+
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+  header h1 .acc { color: var(--accent); }
+  .subtitle { color: var(--muted); margin: 0 0 18px; font-size: 12px; }
+  .subtitle .dot { color: var(--success); }
+
+  /* ---------- controls ---------- */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 22px;
+    align-items: flex-end;
+    background: #12121c;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin: 0 0 18px;
+  }
+  .ctl { display: flex; flex-direction: column; gap: 5px; }
+  .ctl > label {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: #0e0e17; }
+  .seg button {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 18px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button:hover { color: var(--fg); }
+  .seg button.active { background: var(--accent); color: #11111b; font-weight: 700; }
+
+  .seg.primary button { padding: 11px 26px; font-size: 15px; font-weight: 700; }
+  .seg.primary button small { font-weight: 400; opacity: 0.75; }
+
+  input[type="range"] { width: 240px; accent-color: var(--accent); cursor: pointer; }
+  .readout { color: var(--fg); font-size: 12px; }
+  .readout .narrow { color: var(--warning); font-weight: 700; }
+
+  .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--fg); font-size: 12px; user-select: none; }
+  .switch input { accent-color: var(--accent); cursor: pointer; }
+
+  .badge-narrow {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    color: var(--warning);
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid var(--warning);
+    background: rgba(249,226,175,0.08);
+    border-radius: 8px;
+    padding: 5px 10px;
+  }
+  .badge-narrow.show { display: inline-flex; }
+
+  /* ---------- stage ---------- */
+  .stage { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .termwrap { flex: 1 1 520px; min-width: 320px; overflow-x: auto; padding-bottom: 6px; }
+
+  .motion-tag {
+    display: none;
+    margin: 10px 0 0;
+    color: var(--success);
+    font-size: 12px;
+  }
+  .motion-tag.show { display: block; }
+  .motion-tag::before { content: "▶ "; color: var(--accent); }
+
+  .caption { margin: 14px 0 0; color: var(--muted); max-width: 95ch; font-size: 12.5px; }
+  .caption strong { color: var(--fg); }
+  .caption .warn { color: var(--warning); }
+  .caption .err { color: var(--error); }
+
+  /* ---------- terminal ---------- */
+  .terminal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+    display: flex;
+    flex-direction: column;
+    width: calc(var(--cols, 110) * 1ch);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .dots { display: flex; gap: 6px; }
+  .d { width: 10px; height: 10px; border-radius: 50%; }
+  .d.r { background: var(--error); }
+  .d.y { background: var(--warning); }
+  .d.g { background: var(--success); }
+  .tbtitle { color: var(--muted); font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tbcol { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+  .transcript {
+    height: 15rem;
+    overflow-y: auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .lines { white-space: pre; }
+  .lines.zoomed { zoom: 1.22; }
+  .tl { color: var(--fg); }
+  .tl.user { color: #89b4fa; }
+  .tl.tool { color: #94e2d5; }
+  .tl.muted { color: var(--muted); }
+
+  .panel {
+    margin: 0;
+    padding: 0;
+    background: var(--panel);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    white-space: pre;
+    overflow: hidden;
+  }
+  .panel.duck { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .panel.cockpit { border-bottom: 1px solid var(--border); }
+
+  .editor {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+  }
+  .prompt { color: var(--accent); }
+  .typed { color: var(--fg); }
+  .cursor {
+    display: inline-block;
+    width: 0.9ch;
+    height: 1.15em;
+    background: var(--accent);
+    margin-left: 1px;
+    vertical-align: text-bottom;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    padding: 7px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* option B composite */
+  .composite { display: flex; align-items: stretch; border-top: 1px solid var(--border); }
+  .editor-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    background: #161620;
+  }
+  .buffer { padding: 10px 12px; color: var(--muted); white-space: pre-wrap; overflow: hidden; font-size: 12px; }
+  .buffer .ln { color: #313244; }
+  .promptline { padding: 10px 12px; border-top: 1px solid var(--border); }
+  .railwrap { flex: 0 0 auto; border-left: 1px solid var(--warning); }
+  .panel.rail { border-bottom: 0; }
+
+  /* ---------- trade-off cards ---------- */
+  .tradeoffs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+    margin: 20px 0 0;
+  }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .badge { font-size: 10px; padding: 2px 9px; border-radius: 999px; letter-spacing: 0.08em; font-weight: 700; }
+  .badge.safe { background: rgba(166,227,161,0.10); color: var(--success); border: 1px solid var(--success); }
+  .badge.risk { background: rgba(243,139,168,0.10); color: var(--error); border: 1px solid var(--error); }
+  .card ul { margin: 0; padding-left: 16px; }
+  .card li { margin: 5px 0; color: var(--fg); font-size: 12.5px; }
+  .card li .good { color: var(--success); }
+  .card li .bad { color: var(--error); }
+  .card li .warn { color: var(--warning); }
+  .card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+  .foot-note { margin-top: 18px; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Pi cockpit <span class="acc">· layout A vs B</span></h1>
+    <p class="subtitle">Self-contained visual explainer · <span class="dot">file:// safe</span> · no network, no CDNs, inline CSS &amp; JS only</p>
+  </header>
+
+  <div class="controls">
+    <div class="ctl">
+      <label>Layout</label>
+      <div class="seg primary" role="group" aria-label="layout">
+        <button id="btnA" class="active">A <small>docked widgets</small></button>
+        <button id="btnB">B <small>side pane</small></button>
+      </div>
+    </div>
+
+    <div class="ctl">
+      <label>Terminal width</label>
+      <div>
+        <input type="range" id="widthSlider" min="50" max="160" step="1" value="110">
+      </div>
+      <div class="readout"><span id="wVal">110 cols</span><span id="narrowWarn" class="narrow"> · &lt;60 → cockpit collapses</span></div>
+    </div>
+
+    <div class="ctl">
+      <label>Duck panel</label>
+      <label class="switch"><input type="checkbox" id="duckToggle" checked> show duck</label>
+    </div>
+
+    <div class="ctl">
+      <label>Option A</label>
+      <label class="switch"><input type="checkbox" id="belowToggle"> cockpit below editor (A′)</label>
+    </div>
+
+    <div class="ctl">
+      <label>Transcript</label>
+      <label class="switch"><input type="checkbox" id="motionToggle"> scroll / zoom behind</label>
+    </div>
+
+    <div class="badge-narrow" id="narrowBadge">◈ widgets have no responsive gate — cockpit collapsed</div>
+  </div>
+
+  <div class="stage">
+    <div class="termwrap">
+      <div class="terminal" id="terminal"></div>
+      <div class="motion-tag" id="motionTag">transcript is scrolling &amp; zooming — in A the strips never cover it; in B the rail stays pinned beside the editor</div>
+      <div class="caption" id="caption"></div>
+    </div>
+  </div>
+
+  <div class="tradeoffs">
+    <div class="card active" id="cardA">
+      <h3>A · docked widget regions <span class="badge safe">SAFE</span></h3>
+      <ul>
+        <li><span class="good">Safe:</span> no focus, text-cursor, or IME capture — widgets are ordinary lines.</li>
+        <li><span class="good">Nothing overlaps the transcript:</span> strips push the input down and consume rows.</li>
+        <li><span class="bad">Shares one region:</span> duck + cockpit stack in the same full-width dock above the editor.</li>
+        <li><span class="bad">Eats rows:</span> every strip takes terminal rows away from the chat.</li>
+        <li><span class="warn">No responsive gate:</span> below 60 cols the cockpit collapses to a single summary line.</li>
+        <li><span class="good">A′:</span> move the cockpit below the editor so the two panels stop sharing one region.</li>
+      </ul>
+    </div>
+    <div class="card" id="cardB">
+      <h3>B · separate side pane <span class="badge risk">RISKY</span></h3>
+      <ul>
+        <li><span class="good">True pinned pane:</span> the rail is always visible and never covers chat.</li>
+        <li><span class="good">Transcript stays full-width</span> above the composite editor + rail region.</li>
+        <li><span class="bad">Must own focus,</span> the text cursor, and IME candidate positioning.</li>
+        <li><span class="bad">IME risk:</span> candidate popups and the caret can detach from the real input.</li>
+        <li><span class="warn">Verdict:</span> risky — needs careful focus handoff between rail and editor.</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="foot-note">Terminal columns: 50 – 160. Panels use box-drawing borders (╭ ─ ╮ │ ├ ┤ ╰ ╯). Drag the width slider below 60 to reveal the narrow-terminal collapse in A.</p>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var state = { layout: "A", cols: 110, duck: true, cockpitBelow: false, motion: false };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  };
+
+  /* ---- line builders (character-grid aware) ---- */
+  function padRow(left, parts, right, width) {
+    var html = esc(left);
+    var len = left.length;
+    for (var i = 0; i < parts.length; i++) {
+      var t = parts[i][0];
+      var c = parts[i][1];
+      html += c ? '<span class="' + c + '">' + esc(t) + '</span>' : esc(t);
+      len += t.length;
+    }
+    var pad = Math.max(0, width - len - right.length);
+    html += new Array(pad + 1).join(" ") + esc(right);
+    return html;
+  }
+
+  function titleRow(title, right, w) {
+    var gap = Math.max(1, w - 2 - title.length - right.length);
+    return padRow("│", [[" ", null], [title, "accent"], [new Array(gap + 1).join(" "), null], [right, "muted"], [" ", null]], "│", w + 2);
+  }
+
+  function bodyRow(parts, w) {
+    return padRow("│", [[" ", null]].concat(parts), "│", w + 2);
+  }
+
+  /* ---- transcript ---- */
+  var LINES = [
+    ["sys",  "· session started · ctx 62% · model opencode-go/deepseek-v4.1-flash"],
+    ["user", "What does \"done\" look like for this task?"],
+    ["agent","Let me pin down acceptance criteria before touching code."],
+    ["tool", "duck ▸ Bench def — What does done look like?"],
+    ["user", "Compare two terminal layouts: docked strips vs a side pane."],
+    ["agent","Rendering both in one explainer, toggled live."],
+    ["tool", "write /tmp/pi-cockpit-a-vs-b.html"],
+    ["out",  "  +342 lines · inline css/js · no network · file:// safe"],
+    ["agent","Done. Option A docks full-width strips above the editor."],
+    ["user", "Show me what happens at 55 columns."],
+    ["tool", "bash ▸ resize 55 cols"],
+    ["out",  "  cockpit < 60 cols → collapsed to one summary line"],
+    ["agent","A has no responsive visibility gate, so widgets shrink to a line."],
+    ["user", "And the side-pane option?"],
+    ["agent","Option B pins the cockpit as a rail beside the editor."],
+    ["tool", "bash ▸ open pi --layout=side-pane"],
+    ["out",  "  rail 34% · min 34 cols · always visible"],
+    ["agent","But the rail must own focus, the cursor, and IME positioning."],
+    ["user", "Which is safer?"],
+    ["agent","A is safe and boring; B is the risky one."],
+    ["tool", "bash ▸ rg -n \"TODO|FIXME\" src"],
+    ["out",  "  src/ui/cockpit.rs:42: // TODO responsive gate"],
+    ["agent","One TODO remains: a width gate for the docked widgets."],
+    ["user", "Drag the width slider and watch the cockpit collapse."],
+    ["agent","Rendering now — try < 60 cols."]
+  ];
+
+  function transcriptHTML() {
+    var out = [];
+    for (var i = 0; i < LINES.length; i++) {
+      var t = LINES[i][0];
+      var text = LINES[i][1];
+      var pre = "", cls = "";
+      if (t === "user") { pre = '<span class="accent">❯</span> '; cls = "user"; }
+      else if (t === "agent") { pre = '<span class="accent">◈</span> '; }
+      else if (t === "tool") { pre = '<span class="success">$</span> '; cls = "tool"; }
+      else if (t === "out") { pre = "  "; cls = "muted"; }
+      else { cls = "muted"; }
+      out.push('<div class="tl' + (cls ? " " + cls : "") + '">' + pre + esc(text) + "</div>");
+    }
+    return out.join("\n");
+  }
+
+  /* ---- cockpit panel ---- */
+  function cockpitHTML(w, collapsed, rail) {
+    var top = "╭" + new Array(w + 1).join("─") + "╮";
+    var sep = "├" + new Array(w + 1).join("─") + "┤";
+    var bot = "╰" + new Array(w + 1).join("─") + "╯";
+
+    if (collapsed) {
+      var one = "◈ ctx 62% · 1.5k tok · rolling 2%";
+      if (one.length > w) one = one.slice(0, w - 1) + "…";
+      return '<pre class="panel cockpit collapsed">' + top + "\n" +
+             padRow("│", [[" ", null], [one, "accent"]], "│", w + 2) + "\n" + bot + "</pre>";
+    }
+
+    var fill = rail ? 8 : 15;
+    var empt = rail ? 5 : 9;
+    var meterLabel = rail ? " 1.5k tok" : "  1.5k tok";
+    var resets3h = rail ? "" : " · resets 3h";
+    var resets2d = rail ? "" : " · resets 2d";
+    var resets21d = rail ? "" : " · resets 21d";
+    var foot = rail ? "/cockpit to hide" : "/cockpit to hide · refreshes each turn";
+
+    var L = [];
+    L.push(titleRow("◈ cockpit", rail ? "deepseek-v4.1-flash" : "opencode-go/deepseek-v4.1-flash", w));
+    L.push(sep);
+    if (rail) {
+      L.push(bodyRow([["▲ owns focus · cursor · IME", "warning"]], w));
+      L.push(bodyRow([["⚠ risky · IME popup can detach", "error"]], w));
+    }
+    L.push(bodyRow([["CONTEXT", "muted"]], w));
+    L.push(bodyRow([["[", "muted"], [new Array(fill + 1).join("█"), "accent"], [new Array(empt + 1).join("░"), "muted"], ["]", "muted"], [meterLabel, "fg"]], w));
+    L.push(bodyRow([["USAGE", "muted"]], w));
+    L.push(bodyRow([["rolling ", "fg"], ["██░░░░", "success"], [" 2%", "accent"], [resets3h, "muted"]], w));
+    L.push(bodyRow([["weekly  ", "fg"], ["█░░░░░", "success"], [" 0%", "accent"], [resets2d, "muted"]], w));
+    L.push(bodyRow([["monthly ", "fg"], ["░░░░░░", "muted"], [" 0%", "accent"], [resets21d, "muted"]], w));
+    L.push(bodyRow([["RECENT DECISIONS", "muted"]], w));
+    L.push(bodyRow([["• ", "muted"], ["allow", "success"], [" · bash", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["allow", "success"], [" · read", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["allow", "success"], [" · write", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["block", "error"], [" · rm -rf /", "fg"]], w));
+    L.push(sep);
+    L.push(bodyRow([[foot, "muted"]], w));
+    return '<pre class="panel cockpit' + (rail ? " rail" : "") + '">' + top + "\n" + L.join("\n") + "\n" + bot + "</pre>";
+  }
+
+  /* ---- duck panel ---- */
+  function duckHTML(w) {
+    var top = "╭" + new Array(w + 1).join("─") + "╮";
+    var sep = "├" + new Array(w + 1).join("─") + "┤";
+    var bot = "╰" + new Array(w + 1).join("─") + "╯";
+    var L = [];
+    L.push(titleRow("duck", "4 questions · in 436 / out 3394", w));
+    L.push(sep);
+    L.push(bodyRow([["• ", "muted"], ["Bench def", "warning"], [" — What does done look like?", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["Plan", "warning"], [" — Which steps first?", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["Risk", "warning"], [" — What could break?", "fg"]], w));
+    L.push(bodyRow([["• ", "muted"], ["Scope", "warning"], [" — What is out of scope?", "fg"]], w));
+    L.push(bodyRow([["Transcript · Pinned · Separate region", "muted"]], w));
+    L.push(sep);
+    L.push(bodyRow([["/duck answer · /duck to close", "muted"]], w));
+    return '<pre class="panel duck">' + top + "\n" + L.join("\n") + "\n" + bot + "</pre>";
+  }
+
+  /* ---- editor / footer ---- */
+  function editorA() {
+    return '<div class="editor"><span class="prompt">❯</span> <span class="typed">compare layouts at ' + state.cols + ' cols</span><span class="cursor">▊</span></div>';
+  }
+
+  function editorComposite(cols, innerW) {
+    var railCols = Math.max(34, Math.round(cols * 0.34));
+    var buffer =
+      '<div class="editor-left">' +
+        '<div class="buffer">' +
+          '<span class="ln"> 1 </span>def render(ctx):<br>' +
+          '<span class="ln"> 2 </span>    cockpit.draw(ctx.metrics)<br>' +
+          '<span class="ln"> 3 </span>    duck.draw(ctx.questions)<br>' +
+          '<span class="ln"> 4 </span>    footer.draw(ctx.status)' +
+        '</div>' +
+        '<div class="promptline"><span class="prompt">❯</span> <span class="typed">render()</span><span class="cursor">▊</span></div>' +
+      '</div>';
+    return '<div class="composite">' + buffer +
+      '<div class="railwrap" style="width:' + railCols + 'ch; min-width:34ch;">' +
+        cockpitHTML(railCols - 2, false, true) +
+      '</div></div>';
+  }
+
+  function footerHTML() {
+    return '<div class="footer"><span class="muted">~</span> <span class="success">main</span>' +
+           '<span class="muted"> · ctx</span> <span class="accent">62%</span>' +
+           '<span class="muted"> · 12m ·</span> <span class="warning">$0.14</span></div>';
+  }
+
+  /* ---- captions ---- */
+  function captionHTML() {
+    var c = "";
+    if (state.layout === "A") {
+      c = '<strong>A · docked widget regions.</strong> Full-width strips stack in the flow — duck sits above the cockpit, ' +
+          'which sits directly above the editor. Strips <strong>push the input down</strong> and consume rows; nothing overlaps the transcript. ';
+      c += state.cockpitBelow
+        ? "The cockpit is moved below the editor (A′), so the two panels no longer share one region."
+        : "Toggle A′ to move the cockpit below the editor and stop the two panels sharing one region.";
+      if (state.cols < 60) {
+        c += ' <span class="warn">At &lt;60 cols the cockpit collapses to one summary line — widgets have no responsive visibility gate.</span>';
+      }
+    } else {
+      c = '<strong>B · separate side pane.</strong> The editor area is replaced by a composite: editor on the left, a pinned ' +
+          'cockpit rail on the right (34% width, min 34 cols) running the height of the editor region. The rail is always visible ' +
+          'and never covers chat. <span class="err">The rail must own focus, the text cursor, and IME candidate positioning — risky.</span>';
+    }
+    return c;
+  }
+
+  /* ---- motion ---- */
+  var motionTimer = null;
+
+  function tickMotion() {
+    var t = $("transcript");
+    if (!t) return;
+    var max = t.scrollHeight - t.clientHeight;
+    if (max <= 0) return;
+    var dir = t.getAttribute("data-dir");
+    if (t.scrollTop >= max - 1) dir = "up";
+    else if (t.scrollTop <= 0) dir = "down";
+    t.setAttribute("data-dir", dir);
+    t.scrollTop += (dir === "up") ? -2 : 2;
+  }
+
+  function setMotion(on) {
+    if (on) {
+      if (!motionTimer) motionTimer = setInterval(tickMotion, 40);
+    } else {
+      if (motionTimer) { clearInterval(motionTimer); motionTimer = null; }
+      var t = $("transcript");
+      if (t) t.scrollTop = 0;
+    }
+  }
+
+  /* ---- render ---- */
+  function render() {
+    var t = $("terminal");
+    var prevScroll = 0;
+    var existing = $("transcript");
+    if (existing) prevScroll = existing.scrollTop;
+
+    var cols = state.cols;
+    var innerW = cols - 2;
+    var collapsed = cols < 60;
+
+    var layoutLabel = state.layout === "A"
+      ? "docked widgets (A" + (state.cockpitBelow ? "′" : "") + ")"
+      : "side pane (B)";
+
+    var html = "";
+    html += '<div class="titlebar">' +
+              '<span class="dots"><span class="d r"></span><span class="d y"></span><span class="d g"></span></span>' +
+              '<span class="tbtitle">pi — terminal · <span class="accent">' + layoutLabel + '</span></span>' +
+              '<span class="tbcol">' + cols + ' cols</span>' +
+            '</div>';
+    html += '<div class="transcript" id="transcript"><div class="lines' + (state.motion ? " zoomed" : "") + '">' + transcriptHTML() + '</div></div>';
+
+    if (state.duck) html += duckHTML(innerW);
+
+    if (state.layout === "A") {
+      if (!state.cockpitBelow) html += cockpitHTML(innerW, collapsed, false);
+      html += editorA();
+      if (state.cockpitBelow) html += cockpitHTML(innerW, collapsed, false);
+    } else {
+      html += editorComposite(cols, innerW);
+    }
+
+    html += footerHTML();
+
+    t.innerHTML = html;
+    t.style.setProperty("--cols", cols);
+
+    var tr = $("transcript");
+    if (tr) tr.scrollTop = prevScroll;
+
+    updateChrome();
+  }
+
+  /* ---- chrome ---- */
+  function updateChrome() {
+    var cols = state.cols;
+    $("wVal").textContent = cols + " cols";
+    $("narrowWarn").style.display = cols < 60 ? "inline" : "none";
+    $("narrowBadge").classList.toggle("show", cols < 60);
+    $("btnA").classList.toggle("active", state.layout === "A");
+    $("btnB").classList.toggle("active", state.layout === "B");
+    $("duckToggle").checked = state.duck;
+    $("belowToggle").checked = state.cockpitBelow;
+    $("belowToggle").disabled = state.layout !== "A";
+    $("motionToggle").checked = state.motion;
+    $("motionTag").classList.toggle("show", state.motion);
+    $("caption").innerHTML = captionHTML();
+    $("cardA").classList.toggle("active", state.layout === "A");
+    $("cardB").classList.toggle("active", state.layout === "B");
+  }
+
+  /* ---- events ---- */
+  $("btnA").addEventListener("click", function () { state.layout = "A"; render(); });
+  $("btnB").addEventListener("click", function () { state.layout = "B"; render(); });
+
+  $("widthSlider").addEventListener("input", function () {
+    state.cols = parseInt(this.value, 10);
+    render();
+  });
+
+  $("duckToggle").addEventListener("change", function () { state.duck = this.checked; render(); });
+  $("belowToggle").addEventListener("change", function () { state.cockpitBelow = this.checked; render(); });
+  $("motionToggle").addEventListener("change", function () { state.motion = this.checked; setMotion(this.checked); render(); });
+
+  /* ---- boot ---- */
+  render();
+})();
+</script>
+</body>
+</html>
