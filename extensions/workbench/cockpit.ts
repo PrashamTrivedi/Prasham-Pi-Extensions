@@ -2,7 +2,7 @@
  * cockpit — a docked widget above the editor showing context, tokens, provider
  * usage, and recent Jev decisions. It reserves layout space instead of floating over
  * the transcript (DeepSeek Pro reviewed the docking change). The ledger is read over
- * HTTP via `shared/ledger.ts`; the extension never spawns the server.
+ * HTTP via `shared/ledger.ts`, which lazily auto-starts the Bun server on first use.
  *
  * Presentation goes through `shared/panel.ts`. The widget has no `visible(width)`
  * gate, so it collapses to a single summary line below 60 columns, and its refresh

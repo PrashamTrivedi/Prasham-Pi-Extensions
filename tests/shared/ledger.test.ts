@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   decisionCounts,
+  isLocalUrl,
   recentCalls,
   type LedgerClientOptions,
   type LedgerResponseLike,
@@ -47,5 +48,15 @@ describe("ledger client", () => {
     const options: LedgerClientOptions = { fetchImpl: async () => jsonResponse({ error: "boom" }) };
     const result = await decisionCounts(options);
     expect(result.error).toBe("boom");
+  });
+});
+
+describe("isLocalUrl", () => {
+  test("local hosts only", () => {
+    expect(isLocalUrl("http://127.0.0.1:37650")).toBe(true);
+    expect(isLocalUrl("http://localhost:37650")).toBe(true);
+    expect(isLocalUrl("http://[::1]:37650")).toBe(true);
+    expect(isLocalUrl("https://decisions.prashamhtrivedi.app")).toBe(false);
+    expect(isLocalUrl("not a url")).toBe(false);
   });
 });
