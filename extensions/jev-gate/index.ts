@@ -7,14 +7,8 @@
  * stdin, and applies the merged verdict (block / confirm / rewrite / replace output /
  * notify / continue). The adapter logs to the same `jev.db` ledger as the other agents.
  */
-import { spawn } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-const HARNESS_DIR = process.env.PI_JEV_HARNESS_DIR ?? join(homedir(), ".claude", "skills", "jev-harness");
-const ADAPTER = join(HARNESS_DIR, "adapters", "pi", "run.ts");
-const TIMEOUT_MS = 8000;
+import { runJevDecision, shellApprovalHandled } from "../shared/jev.ts";
 
 export type ToolKind = "shell" | "read" | "write" | "edit" | "mcp" | "fetch" | "subagent" | "browser" | "other";
 
@@ -34,15 +28,6 @@ export interface JevToolCall {
   output?: string;
   subagentPrompt?: string;
   subagentModel?: string;
-}
-
-interface Verdicts {
-  gate?: { action: "deny" | "ask"; reason: string };
-  rewrite?: { input: Record<string, unknown>; note: string };
-  replace?: { output: string; note: string };
-  cont?: { reason: string };
-  context?: string[];
-  notify?: string[];
 }
 
 function asStr(value: unknown): string | undefined {
@@ -97,30 +82,6 @@ export function flattenContent(content: Array<{ type?: string; text?: string }>)
     .trim();
 }
 
-/** Run the adapter subprocess and resolve with its verdict JSON (neutral `{}` on any failure). */
-function runAdapter(eventName: string, payload: Record<string, unknown>): Promise<Verdicts> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    const child = spawn("bun", [ADAPTER, eventName], { stdio: ["pipe", "pipe", "ignore"] });
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* already exited */ }
-      resolve({});
-    }, TIMEOUT_MS);
-    child.stdout.on("data", (data: Buffer) => { stdout += data.toString(); });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      console.error(`jev-gate: adapter failed (${HARNESS_DIR}):`, error.message);
-      resolve({});
-    });
-    child.on("close", () => {
-      clearTimeout(timer);
-      try { resolve(JSON.parse(stdout.trim()) as Verdicts); } catch { resolve({}); }
-    });
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-  });
-}
-
 function sessionId(ctx: ExtensionContext): string {
   try { return ctx.sessionManager.getSessionId(); } catch { return "unknown"; }
 }
@@ -143,12 +104,15 @@ function lastAssistant(ctx: ExtensionContext): string {
 export default function jevGate(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const tool = mapToolCall(event.toolName, event.input as unknown as Record<string, unknown>);
-    const verdicts = await runAdapter("pre_tool", {
+    // `sandbox-dev` owns shell-safety for commands its deterministic policy flagged; skip so the
+    // human is never prompted twice for the same shell command.
+    if (tool.kind === "shell" && shellApprovalHandled(event.toolCallId)) return;
+    const verdicts = (await runJevDecision("pre_tool", {
       sessionId: sessionId(ctx),
       cwd: ctx.cwd,
       transcriptPath: process.env.PI_SESSION_FILE,
       tool,
-    });
+    })) ?? {};
     for (const note of verdicts.notify ?? []) ctx.ui.notify(note, "info");
     if (verdicts.gate?.action === "deny") return { block: true, reason: `jev: ${verdicts.gate.reason}` };
     if (verdicts.gate?.action === "ask") {
@@ -166,12 +130,12 @@ export default function jevGate(pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     const tool = mapToolCall(event.toolName, event.input as unknown as Record<string, unknown>);
     tool.output = flattenContent(event.content as Array<{ type?: string; text?: string }>);
-    const verdicts = await runAdapter(event.isError ? "tool_failure" : "post_tool", {
+    const verdicts = (await runJevDecision(event.isError ? "tool_failure" : "post_tool", {
       sessionId: sessionId(ctx),
       cwd: ctx.cwd,
       transcriptPath: process.env.PI_SESSION_FILE,
       tool,
-    });
+    })) ?? {};
     for (const note of verdicts.notify ?? []) ctx.ui.notify(note, "info");
     if (verdicts.replace) return { content: [{ type: "text", text: verdicts.replace.output }] };
     const context = verdicts.context ?? [];
@@ -183,12 +147,12 @@ export default function jevGate(pi: ExtensionAPI) {
 
   pi.on("agent_before_settle", async (event, ctx) => {
     if (event.outcome !== "completed") return;
-    const verdicts = await runAdapter("stop", {
+    const verdicts = (await runJevDecision("stop", {
       sessionId: sessionId(ctx),
       cwd: ctx.cwd,
       transcriptPath: process.env.PI_SESSION_FILE,
       lastAssistantText: lastAssistant(ctx),
-    });
+    })) ?? {};
     const entries: Array<{ type: "custom_message"; customType: string; content: string; display: true }> = [];
     for (const note of verdicts.notify ?? []) entries.push({ type: "custom_message", customType: "jev", content: note, display: true });
     if (verdicts.cont) {

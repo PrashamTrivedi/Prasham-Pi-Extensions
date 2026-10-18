@@ -3,8 +3,37 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, classifyToolCall, isImplementation, type PolicyCall } from "./policy.ts";
+import { DEFAULT_CONFIG, classifyToolCall, isImplementation, isShellConfirm, type PolicyCall } from "./policy.ts";
 import { anchorMessage, extractOutcome } from "./state.ts";
+import * as jevModule from "../shared/jev.ts";
+
+/**
+ * Mutable bridge so tests can stub the Jev calls without spawning a subprocess or hitting the
+ * network. Production uses the real functions captured from `../shared/jev.ts`.
+ */
+export const jev = {
+  runJevDecision: jevModule.runJevDecision,
+  markShellApprovalHandled: jevModule.markShellApprovalHandled,
+  askJev: jevModule.askJev,
+};
+
+const PLAN_SAFETY_QUESTIONS = {
+  irreversible: {
+    type: "noul",
+    instructions:
+      "Would implementing this plan perform an irreversible or hard-to-undo action (data deletion, schema migration, force push, publish, credential change) that needs human review?",
+  },
+  scope_risk: {
+    type: "noul",
+    instructions:
+      "Does the plan touch authentication, secrets, or schema, or go materially beyond its stated scope, in a way that needs human judgment?",
+  },
+  safe_autoproceed: {
+    type: "noul",
+    instructions:
+      "Is it safe for the agent to implement this plan fully autonomously without a human reviewing it first?",
+  },
+} as const;
 
 const STATUS_KEY = "sandbox-dev";
 const OUTCOME_ENTRY = "sandbox-dev-outcome";
@@ -34,6 +63,10 @@ export default function sandboxDev(pi: ExtensionAPI) {
 
   const status = (ctx: ExtensionContext, text: string | undefined) => {
     if (ctx.mode === "tui" || ctx.mode === "rpc") ctx.ui.setStatus(STATUS_KEY, text);
+  };
+
+  const sessionId = (ctx: ExtensionContext): string => {
+    try { return ctx.sessionManager.getSessionId(); } catch { return "unknown"; }
   };
 
   const renderStatus = (ctx: ExtensionContext) => {
@@ -125,8 +158,33 @@ export default function sandboxDev(pi: ExtensionAPI) {
     const decision = classifyToolCall(call, ctx.cwd, config);
     if (decision.verdict === "allow") return;
     if (decision.verdict === "deny") {
+      if (isShellConfirm(call)) jev.markShellApprovalHandled(event.toolCallId);
       ctx.ui.notify(`sandbox-dev denied ${event.toolName}: ${decision.reason}`, "error");
       return { block: true, reason: `sandbox-dev: ${decision.reason}` };
+    }
+    // Shell confirmations are Jev-resolvable: safe commands auto-approve, risky ones ask.
+    if (isShellConfirm(call)) {
+      jev.markShellApprovalHandled(event.toolCallId);
+      const verdicts = await jev.runJevDecision("pre_tool", {
+        sessionId: sessionId(ctx),
+        cwd: ctx.cwd,
+        tool: {
+          kind: "shell",
+          command: String(input.command ?? ""),
+          description: String(input.description ?? ""),
+        },
+      });
+      // `undefined` means Jev was unavailable — fail closed by falling through to the human confirm.
+      if (verdicts !== undefined) {
+        const gate = verdicts.gate;
+        if (gate?.action === "deny") {
+          return { block: true, reason: `sandbox-dev: ${gate.reason}` };
+        }
+        if (gate?.action !== "ask") {
+          ctx.ui.notify(`sandbox-dev: auto-approved ${event.toolName} (Jev: safe)`, "info");
+          return;
+        }
+      }
     }
     if (!ctx.hasUI) {
       return { block: true, reason: `sandbox-dev: ${decision.reason}; no UI to confirm, failing closed` };
@@ -149,6 +207,30 @@ export default function sandboxDev(pi: ExtensionAPI) {
 
   // --- Target 2: the plan gate, conversational ---------------------------------------------
 
+  /** Ask Jev whether the plan is safe to implement autonomously. Any failure fails closed. */
+  const planLooksSafe = async (ctx: ExtensionContext, planText: string, task: string): Promise<boolean> => {
+    try {
+      const result = await jev.askJev(
+        { plan: planText.slice(0, 8000), task, cwd: ctx.cwd },
+        PLAN_SAFETY_QUESTIONS,
+      );
+      const noul = (id: string): number | undefined => {
+        const answer = result.answers?.[id];
+        return typeof answer?.noul === "number" ? answer.noul : undefined;
+      };
+      const safeAutoproceed = noul("safe_autoproceed");
+      const irreversible = noul("irreversible");
+      const scopeRisk = noul("scope_risk");
+      return (
+        typeof safeAutoproceed === "number" && safeAutoproceed >= 0.6 &&
+        typeof irreversible === "number" && irreversible < 0.5 &&
+        typeof scopeRisk === "number" && scopeRisk < 0.5
+      );
+    } catch {
+      return false;
+    }
+  };
+
   pi.registerTool({
     name: "dev_request_approval",
     label: "Dev Plan Approval",
@@ -164,6 +246,28 @@ export default function sandboxDev(pi: ExtensionAPI) {
       if (!plan) return notApproved(`No plan at taskNotes/${task}/taskFindings.md. Run /codePlanner first.`);
       const outcome = extractOutcome(plan.text);
       if (!outcome) return notApproved(`taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.`);
+      if (await planLooksSafe(ctx, plan.text, task)) {
+        pendingAnchor = { task, outcome, budget: config.budget };
+        armAnchor(ctx);
+        ctx.ui.notify(`sandbox-dev: auto-approved ${task} (Jev: safe)`, "info");
+        pi.sendMessage(
+          {
+            customType: GATE_MESSAGE,
+            display: true,
+            content: `sandbox-dev: plan ${task} auto-approved by Jev (safe). Implementation is authorized; the outcome is anchored.`,
+          },
+          { triggerTurn: false },
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Auto-approved ${task} (Jev judged it safe). The outcome is anchored — proceed with implementation (startWork).`,
+            },
+          ],
+          details: {},
+        };
+      }
       presentGate(ctx, task, outcome);
       return {
         content: [
