@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync, openSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, renameSync, openSync, closeSync, readSync } from "node:fs";
 import { clean, publishActivity, readActivity, readPreview } from "./activity.ts";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -118,6 +118,27 @@ export function matchRuns<T extends { id: string; label: string }>(agents: reado
   const labelled = agents.filter((agent) => agent.label.toLowerCase().includes(needle));
   if (labelled.length) return labelled;
   return agents.filter((agent) => agent.id.includes(needle));
+}
+
+/**
+ * Reads session bytes written since `offset`, returning only whole lines. A
+ * trailing partial line is left for the next call, and cutting on a newline
+ * keeps a multi-byte character from being split while decoding.
+ */
+export function readSessionChunk(path: string, offset: number): { chunk: string; next: number } {
+  try {
+    const size = statSync(path).size;
+    if (size <= offset) return { chunk: "", next: offset };
+    const buffer = Buffer.alloc(size - offset);
+    const fd = openSync(path, "r");
+    let read: number;
+    try { read = readSync(fd, buffer, 0, buffer.length, offset); } finally { closeSync(fd); }
+    const text = buffer.subarray(0, read).toString("utf8");
+    const cut = text.lastIndexOf("\n");
+    if (cut < 0) return { chunk: "", next: offset };
+    const chunk = text.slice(0, cut + 1);
+    return { chunk, next: offset + Buffer.byteLength(chunk, "utf8") };
+  } catch { return { chunk: "", next: offset }; }
 }
 
 /** Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer. */
@@ -476,21 +497,35 @@ export default function piFabric(pi: ExtensionAPI) {
       return;
     }
     const heading = (current: FabricAgent) => `${current.label} · ${short(current.id)} · ${current.model} · ${current.status}`;
+    const initial = readTranscript(found.path);
+    // Follow from the last complete line so a run mid-write is not skipped; a
+    // truncated first load is final and stops following.
+    let cursor = Buffer.byteLength(initial.text.slice(0, initial.text.lastIndexOf("\n") + 1), "utf8");
     let timer: ReturnType<typeof setInterval> | undefined;
     try {
       await ctx.ui.custom((tui, theme, _keys, done) => {
         const viewer = new TranscriptViewerOverlay({
           theme,
           title: heading(found.agent),
-          read: () => readTranscript(found.path),
           maxRows: Math.max(3, windowHeight(tui.terminal.rows) - 6),
           onClose: () => done(undefined),
         });
+        viewer.setSource(initial);
+        let lastTitle = heading(found.agent);
         timer = setInterval(() => {
           try {
             const latest = rootId ? loadState(rootId).agents[agentId] : undefined;
-            if (latest) viewer.setTitle(heading(latest));
-            if (viewer.refresh()) tui.requestRender();
+            if (latest) {
+              const next = heading(latest);
+              if (next !== lastTitle) { lastTitle = next; viewer.setTitle(next); tui.requestRender(); }
+            }
+            if (initial.notice) return;
+            // Read only what was appended, and parse only those lines: following a
+            // live run must not re-read or re-parse the whole session every second.
+            const read = readSessionChunk(found.path, cursor);
+            if (!read.chunk) return;
+            cursor = read.next;
+            if (viewer.appendText(read.chunk)) tui.requestRender();
           } catch { /* Keep the last transcript that rendered. */ }
         }, 1000);
         return {
@@ -499,6 +534,7 @@ export default function piFabric(pi: ExtensionAPI) {
           render: (width: number) => {
             // Fill the screen's rows exactly: a non-overlay custom screen owns the interactive area.
             const height = windowHeight(tui.terminal.rows);
+            viewer.setHeight(height);
             const lines = viewer.render(width);
             return lines.length >= height ? lines.slice(0, height) : [...lines, ...Array<string>(height - lines.length).fill("")];
           },

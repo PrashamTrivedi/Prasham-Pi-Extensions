@@ -385,9 +385,11 @@ export class TranscriptViewerOverlay implements Component {
   private title: string;
   private readonly read?: () => TranscriptSource;
   private readonly onClose?: () => void;
-  private readonly maxRows: number;
+  private maxRows: number;
   private source: TranscriptSource = { text: "" };
   private entries: TranscriptEntry[] = [];
+  /** Index in `source.text` after the last parsed complete line. */
+  private parsedChars = 0;
   private cache?: { width: number; text: string; lines: string[] };
   private offset = 0;
   private maxOffset = 0;
@@ -400,10 +402,19 @@ export class TranscriptViewerOverlay implements Component {
     this.maxRows = Math.max(3, options.maxRows ?? 20);
     if (this.read) this.setSource(this.read());
   }
-  /** Theme or viewport changes drop the wrapped layout. */
+  /** Theme changes drop the wrapped layout. */
   invalidate(): void { this.cache = undefined; }
   /** The header is not part of the wrapped layout, so a live status needs no relayout. */
   setTitle(title: string): void { this.title = title; }
+  /**
+   * Caps the body so this view fits in `rows` lines, leaving room for its own
+   * chrome (title, count line, two rules, hint, optional notice). Called from
+   * render so a terminal resize is picked up without reopening the transcript.
+   */
+  setHeight(rows: number): void {
+    const chrome = 5 + (this.source.notice ? 1 : 0);
+    this.maxRows = Math.max(3, Math.floor(rows) - chrome);
+  }
   /** Re-reads the source; returns true when the transcript changed. */
   refresh(): boolean {
     if (!this.read) return false;
@@ -417,12 +428,32 @@ export class TranscriptViewerOverlay implements Component {
   }
   setSource(source: TranscriptSource): void {
     this.source = source;
-    this.entries = parseSessionText(source.text);
+    // Only complete lines are parsed; a half-written trailing line waits for its newline.
+    const lastNewline = source.text.lastIndexOf("\n");
+    this.parsedChars = lastNewline + 1;
+    this.entries = parseSessionText(source.text.slice(0, this.parsedChars));
     this.cache = undefined;
     this.maxOffset = 0;
   }
-  getState(): { offset: number; maxOffset: number; entries: number } {
-    return { offset: this.offset, maxOffset: this.maxOffset, entries: this.entries.length };
+  /**
+   * Appends newly written session bytes, parsing only the new complete lines, so
+   * following a live run costs the size of what was added rather than the file.
+   * A trailing partial line is kept for the next call and never dropped.
+   */
+  appendText(chunk: string): boolean {
+    if (!chunk) return false;
+    this.source = { ...this.source, text: this.source.text + chunk };
+    const end = this.source.text.lastIndexOf("\n");
+    if (end < this.parsedChars) return false;
+    const fresh = this.source.text.slice(this.parsedChars, end).split("\n").flatMap(parseSessionLine);
+    this.parsedChars = end + 1;
+    if (!fresh.length) return false;
+    this.entries = [...this.entries, ...fresh];
+    this.cache = undefined;
+    return true;
+  }
+  getState(): { offset: number; maxOffset: number; entries: number; rows: number } {
+    return { offset: this.offset, maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows };
   }
   handleInput(input: string): void {
     const page = Math.max(1, this.rows() - 2);

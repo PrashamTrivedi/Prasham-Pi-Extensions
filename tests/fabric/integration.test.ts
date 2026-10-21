@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { afterAll, test, expect } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,9 @@ type Driver = (view: any, done: (value?: any) => void) => void;
  * driver from the queue, so a multi-overlay flow (`/team` → transcript) is testable.
  */
 function harness(rootId: string, agents: Record<string, unknown>, entries: any[] = [{ type: "custom", customType: "pi-fabric-root", data: { rootId } }]) {
+  // Inside a Fabric child these are set; inheriting them would point a test at the live root.
+  delete process.env.PI_FABRIC_AGENT;
+  delete process.env.PI_FABRIC_ROOT;
   const dir = join(tmpdir(), "pi-fabric", rootId);
   mkdirSync(join(dir, "outputs"), { recursive: true });
   mkdirSync(join(dir, "sessions"), { recursive: true });
@@ -59,10 +62,10 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
 }
 
 const env = { agent: process.env.PI_FABRIC_AGENT, root: process.env.PI_FABRIC_ROOT };
-function restoreEnv() {
+afterAll(() => {
   if (env.agent === undefined) delete process.env.PI_FABRIC_AGENT; else process.env.PI_FABRIC_AGENT = env.agent;
   if (env.root === undefined) delete process.env.PI_FABRIC_ROOT; else process.env.PI_FABRIC_ROOT = env.root;
-}
+});
 delete process.env.PI_FABRIC_AGENT;
 delete process.env.PI_FABRIC_ROOT;
 
@@ -111,7 +114,7 @@ test("restores the root, keeps the status line, records a durable result, and op
     expect(host.entries.filter(entry => entry.customType === "pi-fabric-result").length).toBe(1);
   } finally {
     host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup(); restoreEnv();
+    host.cleanup();
   }
 });
 
@@ -130,7 +133,7 @@ test("finished runs leave the live team view, /team all reveals them, and enter 
     { type: "message", id: "2", parentId: "1", timestamp: stale, message: { role: "assistant", content: [{ type: "text", text: "The stale run failed on the lock." }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "false" } }] } },
     { type: "message", id: "3", parentId: "2", timestamp: stale, message: { role: "toolResult", toolCallId: "c", toolName: "bash", content: [{ type: "text", text: "exit 1" }], isError: true } },
   ];
-  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_stale.jsonl"), transcript.map(entry => JSON.stringify(entry)).join("\n"));
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_stale.jsonl"), `${transcript.map(entry => JSON.stringify(entry)).join("\n")}\n`);
   try {
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
@@ -183,7 +186,7 @@ test("finished runs leave the live team view, /team all reveals them, and enter 
     expect(host.notified).toEqual([]);
   } finally {
     host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup(); restoreEnv();
+    host.cleanup();
   }
 });
 
@@ -200,7 +203,7 @@ test("a run without a saved session says so instead of opening an empty viewer",
     expect(host.overlays).toHaveLength(2); // inspector, inspector again — no transcript overlay
   } finally {
     host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup(); restoreEnv();
+    host.cleanup();
   }
 });
 
@@ -216,11 +219,11 @@ test("/transcript opens a run without /team: picker, direct id/label, and the al
     line({ type: "session", version: 3, id: "alpha-1111", cwd: "/tmp" }),
     line({ type: "message", message: { role: "user", content: "Report the version." } }),
     line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Version 0.1.0." }] } }),
-  ].join("\n"));
+  ].join("\n") + "\n");
   writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_beta-2222.jsonl"), [
     line({ type: "session", version: 3, id: "beta-2222", cwd: "/tmp" }),
     line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Counting lines." }] } }),
-  ].join("\n"));
+  ].join("\n") + "\n");
   try {
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
@@ -268,6 +271,28 @@ test("/transcript opens a run without /team: picker, direct id/label, and the al
     expect(host.notified.join("\n")).toContain("No Fabric run matches 'nope'");
   } finally {
     host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup(); restoreEnv();
+    host.cleanup();
+  }
+});
+
+test("a stray Fabric environment never binds a test to the live root", async () => {
+  // Exactly the situation inside a Fabric child: both variables point at a real run.
+  const liveRoot = "a-root-that-is-not-the-test-root";
+  process.env.PI_FABRIC_ROOT = liveRoot;
+  process.env.PI_FABRIC_AGENT = "some-child";
+  const rootId = randomUUID();
+  const host = harness(rootId, { only: { id: "only", label: "Test run", model: "terra", task: "t", status: "running" } });
+  try {
+    fabric(host.pi);
+    // Read the root the extension actually bound: it must be the harness's, not the live one.
+    expect(process.env.PI_FABRIC_ROOT).toBeUndefined();
+    expect(process.env.PI_FABRIC_AGENT).toBeUndefined();
+    host.events.get("session_start")!({}, host.ctx);
+    expect(host.statuses.at(-1)![1]).toContain("1 running");
+    const runs = await host.tools.get("agent_status").execute("call", {}, undefined, undefined, host.ctx);
+    expect(runs.content[0].text).toContain("Test run");
+  } finally {
+    host.events.get("session_shutdown")?.({}, host.ctx);
+    host.cleanup();
   }
 });

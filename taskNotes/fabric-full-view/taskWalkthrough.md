@@ -108,3 +108,37 @@ Human feedback: the transcript "isn't fullscreen", it "should render within the 
   transcript → picker → chat; `g`/`G`/space scrolled and clamped.
 - Status line read `◆ fabric 1 running · 1 archived` with a 15-minute-old finished run, proving the
   prune filter against a real state file.
+
+## Revision 3 — audit findings fixed
+
+A `qwen` Fabric agent audited commits `c31b79b` + `14bb3ea` against the acceptance criteria
+(transcript `552515`). Criteria 1-5 MET; 6 NOT MET, with three real defects. One was mine and
+reproduced independently before fixing:
+
+```
+PI_FABRIC_ROOT=<live> PI_FABRIC_AGENT=fake bun test tests/fabric/integration.test.ts
+  before → 1 pass, 3 fail        after → 5 pass, 0 fail
+```
+
+1. **Tests were not hermetic.** `restoreEnv()` ran in every test's `finally`, handing the real
+   `PI_FABRIC_ROOT`/`PI_FABRIC_AGENT` to the next test; `fabric()` then bound to the live root, so
+   the suite went red inside any Fabric child — exactly where this repo runs it. Isolation now
+   lives in `harness()` (both variables are cleared before `fabric()`), env is restored once in
+   `afterAll`, and a regression test sets both variables and asserts the extension still binds the
+   harness root.
+2. **Following a live run re-read and re-parsed the whole session every second.** `readSessionChunk`
+   now reads only appended bytes (whole lines only, cut on `\n` so a multi-byte character is never
+   split), and `TranscriptViewerOverlay.appendText` parses only the new complete lines, buffering a
+   trailing partial line. The TUI timer reads from the last complete line at open, so a run written
+   mid-open is not skipped; a truncated first load stops following.
+3. **The viewer height was frozen at construction.** `setHeight(rows)` is now called from the
+   render path, so a terminal resize immediately re-sizes the body (the notice line is counted in
+   the chrome).
+
+### Verification
+
+- Real 236 783-byte, 68-entry session replayed **in 137-byte steps** through the exact reader +
+  parser loop: 68 entries, 236 783 of 236 783 bytes consumed, no duplication or loss; initial
+  bounded load also 68 entries; `setHeight(24)` renders exactly 24 lines.
+- `npm run check` → `198 pass, 0 fail`, 1 247 assertions, 11 extensions.
+- Same suite with `PI_FABRIC_ROOT`/`PI_FABRIC_AGENT` set (child environment) → `198 pass, 0 fail`.

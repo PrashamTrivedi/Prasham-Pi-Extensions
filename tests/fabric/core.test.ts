@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, isPruned, matchRuns, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { buildChildArgs, capturePatch, effectiveRule, isPruned, matchRuns, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -163,4 +163,18 @@ test("/transcript matches an exact id, then a prefix, then a label, and never gu
   expect(matchRuns(runs, "3333").map((run) => run.id)).toEqual(["beta-3333"]);
   expect(matchRuns(runs, "nope")).toEqual([]);
   expect(matchRuns(runs, "  ")).toEqual([]);
+});
+
+test("following a live session reads only whole appended lines, even across a multi-byte character", () => {
+  const dir = temp();
+  const path = join(dir, "session.jsonl");
+  writeFileSync(path, `{"a":1}\n{"b":"`);
+  // The incomplete last line is held back until its newline arrives.
+  expect(readSessionChunk(path, 0)).toEqual({ chunk: `{"a":1}\n`, next: 8 });
+  expect(readSessionChunk(path, 8)).toEqual({ chunk: "", next: 8 });
+  appendFileSync(path, `界"}\n`);
+  expect(readSessionChunk(path, 8).chunk).toBe(`{"b":"界"}\n`);
+  // Offsets past the end and missing files are no-ops, never errors.
+  expect(readSessionChunk(path, 9999)).toEqual({ chunk: "", next: 9999 });
+  expect(readSessionChunk(join(dir, "missing.jsonl"), 0)).toEqual({ chunk: "", next: 0 });
 });

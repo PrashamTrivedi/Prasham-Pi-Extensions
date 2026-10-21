@@ -11,7 +11,7 @@ const sessionFixture = [
  JSON.stringify({ type: "message", message: { role: "user", content: "Summarize 界 the failure" } }),
  JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "The lock was held.".repeat(6) }, { type: "toolCall", name: "bash", arguments: { command: "false" } }] } }),
  JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "exit 1" }], isError: true } }),
-].join("\n");
+].join("\n") + "\n";
 test("every surface respects terminal width, including tiny terminals", () => {
  for (const width of [1, 2, 3, 20, 75, 76, 100, 160]) {
   const inspector = new LiveTeamInspectorOverlay({ theme, data: { agents } });
@@ -64,7 +64,7 @@ const session = [
   { type: "message", id: "a4", parentId: "a3", timestamp: "2026-01-01T00:00:04.000Z", message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "export const a = 1;" }], isError: false, timestamp: 4 } },
   { type: "model_change", id: "a5", parentId: "a4", timestamp: "2026-01-01T00:00:05.000Z", provider: "anthropic", modelId: "claude-sonnet-4-5" },
 ];
-const sessionText = session.map((entry) => JSON.stringify(entry)).join("\n");
+const sessionText = `${session.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 
 test("a session line parses into ordered transcript blocks and skips prompt noise", () => {
  expect(parseSessionLine("not json")).toEqual([]);
@@ -138,7 +138,7 @@ test("a live transcript refreshes only when the saved session changes and follow
  expect(viewer.refresh()).toBe(false);
  viewer.handleInput("G");
  const before = viewer.getState();
- text = `${sessionText}\n${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Finished: all checks pass." }] } })}`;
+ text = `${sessionText}${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Finished: all checks pass." }] } })}\n`;
  expect(viewer.refresh()).toBe(true);
  const after = viewer.render(90);
  expect(after.join("\n")).toContain("Finished: all checks pass.");
@@ -204,4 +204,45 @@ test("the picker explains an empty run list instead of rendering a blank frame",
  expect(text).toContain("Run transcripts  0 runs");
  expect(text).toContain("No Fabric runs in this session yet");
  picker.handleInput("\r"); // no selection, no crash, no open
+});
+
+test("appending a live transcript parses only new lines and never drops a partial one", () => {
+ const viewer = new TranscriptViewerOverlay({ theme, title: "live", maxRows: 8 });
+ const line = (text: string) => `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } })}\n`;
+ viewer.setSource({ text: line("first") });
+ expect(viewer.getState().entries).toBe(1);
+ // A half-written line waits for its newline instead of being parsed as garbage.
+ const second = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "second" }] } });
+ expect(viewer.appendText(second.slice(0, 15))).toBe(false);
+ expect(viewer.getState().entries).toBe(1);
+ expect(viewer.appendText(`${second.slice(15)}\n`)).toBe(true);
+ expect(viewer.getState().entries).toBe(2);
+ expect(viewer.render(80).join("\n")).toContain("second");
+ // Appending costs only the new line: earlier entries are kept, not re-parsed.
+ viewer.appendText(line("third"));
+ expect(viewer.getState().entries).toBe(3);
+ expect(viewer.render(80).join("\n")).toContain("first");
+ expect(viewer.appendText("")).toBe(false);
+});
+
+test("the viewer resizes its body to a new window height", () => {
+ const viewer = new TranscriptViewerOverlay({ theme, title: "resize", read: () => ({ text: sessionText }), maxRows: 5 });
+ viewer.setHeight(24);
+ expect(viewer.getState().rows).toBe(19); // 24 - chrome (title, count, two rules, hint)
+ expect(viewer.render(100).length).toBeLessThanOrEqual(24);
+ viewer.setHeight(12);
+ expect(viewer.getState().rows).toBe(7);
+ expect(viewer.render(100).length).toBeLessThanOrEqual(12);
+ // Too small a window still leaves a usable body.
+ viewer.setHeight(1);
+ expect(viewer.getState().rows).toBe(3);
+ // A notice is part of the chrome, so it cannot push the scroll hint off-screen.
+ const noticed = new TranscriptViewerOverlay({ theme, title: "notice", read: () => ({ text: sessionText, notice: "truncated" }) });
+ noticed.setHeight(14);
+ expect(noticed.getState().rows).toBe(8);
+ expect(noticed.render(100).length).toBeLessThanOrEqual(14);
+ // Long content fills the window exactly, which is what the TUI wrapper relies on.
+ const long = new TranscriptViewerOverlay({ theme, title: "long", read: () => ({ text: sessionText.repeat(4) }), maxRows: 5 });
+ long.setHeight(24);
+ expect(long.render(100)).toHaveLength(24);
 });
