@@ -1,17 +1,16 @@
 import { afterAll, test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import fabric from "../../extensions/fabric/index.ts";
-import { publishActivity } from "../../extensions/fabric/activity.ts";
 
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text };
 type Driver = (view: any, done: (value?: any) => void) => void;
 
 /**
- * Drives the extension with a fake Pi host. Every `ui.custom` call takes the next
- * driver from the queue, so a multi-overlay flow (`/team` → transcript) is testable.
+ * Drives the extension with a fake Pi host. `ui.custom` calls take the next
+ * driver from the queue, so the `/agents` → transcript → `/agents` chain is testable.
  */
 function harness(rootId: string, agents: Record<string, unknown>, entries: any[] = [{ type: "custom", customType: "pi-fabric-root", data: { rootId } }]) {
   // Inside a Fabric child these are set; inheriting them would point a test at the live root.
@@ -25,7 +24,6 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
   const events = new Map<string, Function>();
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
-  const shortcuts = new Map<string, any>();
   const renderers = new Map<string, Function>();
   const widgets = new Map<string, any>();
   const statuses: Array<[string, string | undefined]> = [];
@@ -37,19 +35,19 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
     on: (name: string, fn: Function) => events.set(name, fn),
     registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
-    registerShortcut: (key: string, options: any) => shortcuts.set(key, options),
+    registerShortcut: () => {},
     registerEntryRenderer: (name: string, fn: Function) => renderers.set(name, fn),
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
   };
   const ctx: any = {
-    cwd: "/tmp", mode: "tui", sessionManager: { getBranch: () => entries },
+    cwd: "/tmp", mode: "tui", sessionManager: { getBranch: () => entries, getSessionFile: () => undefined },
     ui: {
       theme,
       setWidget: (name: string, widget: any) => widgets.set(name, widget),
       setStatus: (name: string, value?: string) => statuses.push([name, value]),
       notify: (message: string) => notified.push(message),
       custom: async (factory: Function, options?: any) => await new Promise<any>((resolve) => {
-        overlays.push(options?.overlayOptions);
+        overlays.push(options);
         const driver = drivers.shift();
         if (!driver) { resolve(undefined); return; }
         const view = factory({ requestRender() {}, terminal: { rows: 40 } }, theme, {}, (value?: any) => resolve(value));
@@ -57,9 +55,16 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
       }),
     },
   };
-  return { dir, ctx, pi, entries, events, tools, commands, shortcuts, renderers, widgets, statuses, overlays, drivers, notified,
+  return { dir, ctx, pi, entries, events, tools, commands, renderers, widgets, statuses, overlays, drivers, notified,
     cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+const sessionLine = (entry: unknown) => JSON.stringify(entry);
+const childSession = (id: string, text: string) => [
+  sessionLine({ type: "session", version: 3, id, cwd: "/tmp" }),
+  sessionLine({ type: "message", message: { role: "user", content: "Do the thing." } }),
+  sessionLine({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } }),
+].join("\n") + "\n";
 
 const env = { agent: process.env.PI_FABRIC_AGENT, root: process.env.PI_FABRIC_ROOT };
 afterAll(() => {
@@ -69,230 +74,216 @@ afterAll(() => {
 delete process.env.PI_FABRIC_AGENT;
 delete process.env.PI_FABRIC_ROOT;
 
-test("restores the root, keeps the status line, records a durable result, and opens the inspector", async () => {
+test("the rows appear below the prompt with a child, clear when main is alone, and no status line is set", () => {
   const rootId = randomUUID();
   const host = harness(rootId, {
-    done: { id: "done", label: "Option A", model: "terra", task: "test", status: "done", resultPath: join(tmpdir(), "pi-fabric", rootId, "outputs", "done.md") },
-    running: { id: "running", label: "Option B", model: "terra", task: "test", status: "running" },
+    child: { id: "child", label: "api-refactor", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString() },
   });
-  writeFileSync(join(host.dir, "outputs", "done.md"), "Measured result, inspect evidence.");
-  publishActivity(host.dir, "running", "activity", "Running read");
-  let inspectorLines: string[] = [];
   try {
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
-
-    // Spec C: the compact pane is gone (even a stale one is cleared); the status line is the only persistent surface.
+    const widget = host.widgets.get("pi-fabric-agents");
+    expect(widget).toBeDefined();
+    const lines = widget({}, theme).render(100);
+    expect(lines.join("\n")).toContain("main");
+    expect(lines.join("\n")).toContain("api-refactor");
+    // No status line and no legacy widget: the rows are the only always-on surface.
+    expect(host.statuses).toEqual([]);
     expect(host.widgets.get("pi-fabric")).toBeUndefined();
-    expect(host.widgets.size).toBe(1);
-    const status = host.statuses.at(-1)!;
-    expect(status[0]).toBe("pi-fabric");
-    expect(status[1]).toContain("fabric");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
 
-    expect(host.entries.filter(entry => entry.customType === "pi-fabric-result").length).toBe(1);
+test("with no children the rows are removed entirely", () => {
+  const rootId = randomUUID();
+  const host = harness(rootId, {});
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    expect(host.widgets.get("pi-fabric-agents")).toBeUndefined();
+    expect(host.statuses).toEqual([]);
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
 
+test("the durable result card survives and await_agents still reports its evidence", async () => {
+  const rootId = randomUUID();
+  const done = { id: "done", label: "Option A", model: "terra", task: "test", status: "done", finishedAt: new Date().toISOString(), resultPath: join(tmpdir(), "pi-fabric", rootId, "outputs", "done.md") };
+  const host = harness(rootId, { done });
+  writeFileSync(join(host.dir, "outputs", "done.md"), "Measured result, inspect evidence.");
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    expect(host.entries.filter((entry) => entry.customType === "pi-fabric-result").length).toBe(1);
     let progress: any;
     const result = await host.tools.get("await_agents").execute("call", { agentIds: ["done"] }, undefined, (value: any) => progress = value, host.ctx);
     expect(progress.details.ui[0].result).toContain("Measured result");
     expect(host.tools.get("await_agents").renderResult(result, { expanded: true }, theme).render(120).join("\n")).toContain("Measured result");
-
-    host.drivers.push((view, done) => {
-      inspectorLines = view.render(120);
-      view.handleInput("\t");
-      expect(view.render(120).join("\n")).toContain("activity");
-      view.handleInput("\u001b");
-      done(undefined);
-    });
-    await host.commands.get("team").handler("", host.ctx);
-    expect(inspectorLines.join("\n")).toContain("Option B");
-
-    // hide/show now toggle the status line rather than a widget.
-    await host.commands.get("team").handler("hide", host.ctx);
-    expect(host.statuses.at(-1)![1]).toBeUndefined();
-    await host.commands.get("team").handler("show", host.ctx);
-    expect(host.statuses.at(-1)![1]).toContain("fabric");
-    expect(host.entries.filter(entry => entry.customType === "pi-fabric-result").length).toBe(1);
-  } finally {
-    host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup();
-  }
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
-test("finished runs leave the live team view, /team all reveals them, and enter replays the saved transcript", async () => {
+test("/agents lists main and the child, opens the run full-window, and Esc steps back", async () => {
   const rootId = randomUUID();
-  const stale = new Date(Date.now() - 10 * 60_000).toISOString();
-  // `stale` has no recorded sessionPath: the viewer must find the file by suffix.
   const host = harness(rootId, {
-    fresh: { id: "fresh", label: "Fresh run", model: "terra", task: "test", status: "done", finishedAt: new Date().toISOString() },
-    stale: { id: "stale", label: "Stale run", model: "terra", task: "test", status: "done", finishedAt: stale },
-    busy: { id: "busy", label: "Busy run", model: "terra", task: "test", status: "running" },
+    child: { id: "child", label: "api-refactor", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString(), sessionPath: join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl") },
   });
-  const transcript = [
-    { type: "session", version: 3, id: "stale", timestamp: stale, cwd: "/tmp" },
-    { type: "message", id: "1", parentId: null, timestamp: stale, message: { role: "user", content: "Summarize the failure." } },
-    { type: "message", id: "2", parentId: "1", timestamp: stale, message: { role: "assistant", content: [{ type: "text", text: "The stale run failed on the lock." }, { type: "toolCall", id: "c", name: "bash", arguments: { command: "false" } }] } },
-    { type: "message", id: "3", parentId: "2", timestamp: stale, message: { role: "toolResult", toolCallId: "c", toolName: "bash", content: [{ type: "text", text: "exit 1" }], isError: true } },
-  ];
-  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_stale.jsonl"), `${transcript.map(entry => JSON.stringify(entry)).join("\n")}\n`);
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl"), childSession("child", "Renamed the module and ran the tests."));
   try {
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
-    expect(host.statuses.at(-1)![1]).toContain("1 archived");
-
-    let prunedView = "";
-    let allView = "";
-    let transcriptView = "";
-    let returnedToInspector = false;
+    let listText = "";
+    let transcriptText = "";
+    let returnedToList = false;
     host.drivers.push((view) => {
-      prunedView = view.render(120).join("\n");
-      view.handleInput("a"); // toggle to all runs
-      allView = view.render(120).join("\n");
-      view.handleInput("j"); // select `stale`
-      view.handleInput("\r"); // open its transcript
+      // A full-window screen hides the rows widget so it cannot clip the screen's top.
+      expect(host.widgets.get("pi-fabric-agents")).toBeUndefined();
+      listText = view.render(100).join("\n");
+      view.handleInput("j");     // main is first; select the child
+      view.handleInput("\r");    // open it
     });
     host.drivers.push((view) => {
-      const frame = view.render(120);
-      // A custom screen owns the interactive area: it fills the window minus Pi's 3-row footer.
+      const frame = view.render(100);
+      transcriptText = frame.join("\n");
+      // A full-window screen: it fills the window minus Pi's 3-row footer.
       expect(frame).toHaveLength(37);
-      transcriptView = frame.join("\n");
-      view.handleInput("\u001b"); // back to the inspector
+      view.handleInput("\u001b"); // back to /agents
     });
     host.drivers.push((view, done) => {
-      returnedToInspector = true;
-      view.handleInput("\u001b");
-      done(undefined);
+      returnedToList = view.render(100).join("\n").includes("api-refactor");
+      done(undefined);            // Esc closes the list
     });
-    await host.commands.get("team").handler("", host.ctx);
+    await host.commands.get("agents").handler("", host.ctx);
 
-    expect(prunedView).toContain("Fresh run");
-    expect(prunedView).toContain("Busy run");
-    expect(prunedView).not.toContain("Stale run");
-    expect(allView).toContain("Stale run");
-    expect(transcriptView).toContain("Stale run");
-    expect(transcriptView).toContain("Summarize the failure.");
-    expect(transcriptView).toContain("The stale run failed on the lock.");
-    expect(transcriptView).toContain("exit 1");
-    expect(returnedToInspector).toBe(true);
-    // The transcript takes the whole Pi window: `ui.custom` without `overlay`, so the chat is replaced.
-    expect(host.overlays).toHaveLength(3);
-    expect(host.overlays[0]).toMatchObject({ width: "95%", maxHeight: "90%" }); // inspector
-    expect(host.overlays[1]).toBeUndefined(); // transcript, full screen
-    expect(host.overlays[2]).toMatchObject({ width: "95%", maxHeight: "90%" }); // inspector again
+    expect(listText).toContain("main");
+    expect(listText).toContain("api-refactor");
+    expect(transcriptText).toContain("Renamed the module");
+    expect(transcriptText).toContain("api-refactor");
+    expect(returnedToList).toBe(true);
+    // The rows come back once the last screen closes.
+    expect(host.widgets.get("pi-fabric-agents")).toBeDefined();
+    // Both screens are full-window custom screens, not overlays.
+    expect(host.overlays).toEqual([undefined, undefined, undefined]);
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
 
-    // Forensics: agent_status still lists the pruned run and says why it is hidden.
+test("a spawn batch opens as two columns and a group member can be read alone with s", async () => {
+  const rootId = randomUUID();
+  const host = harness(rootId, {
+    "alpha-1111": { id: "alpha-1111", label: "Alpha", model: "qwen", task: "t", status: "done", batchId: "call-1", finishedAt: new Date().toISOString(), sessionPath: join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_alpha-1111.jsonl") },
+    "beta-2222": { id: "beta-2222", label: "Beta", model: "qwen", task: "t", status: "done", batchId: "call-1", finishedAt: new Date().toISOString(), sessionPath: join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_beta-2222.jsonl") },
+  });
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_alpha-1111.jsonl"), childSession("alpha-1111", "Alpha finished first."));
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_beta-2222.jsonl"), childSession("beta-2222", "Beta finished second."));
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    let listText = "";
+    let splitText = "";
+    let singleText = "";
+    host.drivers.push((view) => {
+      // A full-window screen hides the rows widget so it cannot clip the screen's top.
+      expect(host.widgets.get("pi-fabric-agents")).toBeUndefined();
+      listText = view.render(100).join("\n");
+      view.handleInput("j");   // the group row sits under main
+      view.handleInput("\r");
+    });
+    host.drivers.push((view) => {
+      splitText = view.render(100).join("\n");
+      view.handleInput("s");   // one column
+      singleText = view.render(100).join("\n");
+      view.handleInput("\u001b");
+    });
+    host.drivers.push((_view, done) => done(undefined));
+    await host.commands.get("agents").handler("", host.ctx);
+
+    expect(listText).toContain("2 agents");
+    expect(splitText).toContain("Alpha finished first.");
+    expect(splitText).toContain("Beta finished second.");
+    expect(splitText).toContain("│");
+    expect(singleText).not.toContain("│");
+    expect(singleText).toContain("tab focus");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
+
+test("an agent idle for ten minutes is gone from the UI but still reported by agent_status", async () => {
+  const rootId = randomUUID();
+  const host = harness(rootId, {
+    stale: { id: "stale", label: "Stale run", model: "qwen", task: "t", status: "done", finishedAt: new Date(Date.now() - 15 * 60_000).toISOString() },
+    busy: { id: "busy", label: "Busy run", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString() },
+  });
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    const rows = host.widgets.get("pi-fabric-agents")({}, theme).render(100).join("\n");
+    expect(rows).toContain("Busy run");
+    expect(rows).not.toContain("Stale run");
+
+    let listText = "";
+    host.drivers.push((view, done) => { listText = view.render(100).join("\n"); done(undefined); });
+    await host.commands.get("agents").handler("", host.ctx);
+    expect(listText).toContain("Busy run");
+    expect(listText).not.toContain("Stale run");
+
     const status = await host.tools.get("agent_status").execute("call", {}, undefined, undefined, host.ctx);
     expect(status.content[0].text).toContain("Stale run");
-    expect(status.content[0].text).toContain("hidden from the live /team views");
-    expect(host.notified).toEqual([]);
-  } finally {
-    host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup();
-  }
+    expect(status.content[0].text).toContain("gone from the rows and /agents");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
-test("a run without a saved session says so instead of opening an empty viewer", async () => {
-  const rootId = randomUUID();
-  const host = harness(rootId, { queued: { id: "queued", label: "Queued run", model: "terra", task: "test", status: "queued" } });
-  try {
-    fabric(host.pi);
-    host.events.get("session_start")!({}, host.ctx);
-    host.drivers.push((view) => { view.handleInput("\r"); });
-    host.drivers.push((_view, done) => done(undefined)); // inspector reopened after the notice
-    await host.commands.get("team").handler("", host.ctx);
-    expect(host.notified.join("\n")).toContain("no saved transcript");
-    expect(host.overlays).toHaveLength(2); // inspector, inspector again — no transcript overlay
-  } finally {
-    host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup();
-  }
-});
-
-test("/transcript opens a run without /team: picker, direct id/label, and the alt+t shortcut", async () => {
+test("x then y in /agents cancels a run and its descendants", async () => {
   const rootId = randomUUID();
   const host = harness(rootId, {
-    // Distinct timestamps make the newest-first order deterministic: beta, then alpha.
-    "alpha-1111": { id: "alpha-1111", label: "Version check", model: "terra", task: "t", status: "done", finishedAt: new Date(Date.now() - 10 * 60_000).toISOString() },
-    "beta-2222": { id: "beta-2222", label: "Line counts", model: "terra", task: "t", status: "running", startedAt: new Date(Date.now() - 60_000).toISOString() },
+    parent: { id: "parent", label: "Parent", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString() },
+    kid: { id: "kid", label: "Kid", model: "qwen", task: "t", status: "running", parentId: "parent", startedAt: new Date().toISOString() },
   });
-  const line = (entry: unknown) => JSON.stringify(entry);
-  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_alpha-1111.jsonl"), [
-    line({ type: "session", version: 3, id: "alpha-1111", cwd: "/tmp" }),
-    line({ type: "message", message: { role: "user", content: "Report the version." } }),
-    line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Version 0.1.0." }] } }),
-  ].join("\n") + "\n");
-  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_beta-2222.jsonl"), [
-    line({ type: "session", version: 3, id: "beta-2222", cwd: "/tmp" }),
-    line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Counting lines." }] } }),
-  ].join("\n") + "\n");
   try {
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
-
-    // The shortcut is registered and reaches the same picker.
-    expect([...host.shortcuts.keys()]).toEqual(["alt+t"]);
-
-    // No argument: a picker lists every run, newest first.
-    let pickerText = "";
-    let transcriptText = "";
-    host.drivers.push((view) => {
-      pickerText = view.render(100).join("\n");
-      expect(pickerText).toContain("Line counts");
-      view.handleInput("j"); // newest first: beta, then alpha
-      view.handleInput("\r"); // open it
+    host.drivers.push((view, done) => {
+      view.handleInput("j");   // the child under main
+      view.handleInput("x");
+      view.handleInput("y");
+      done(undefined);
     });
-    host.drivers.push((view) => {
-      transcriptText = view.render(100).join("\n");
-      expect(view.render(100)).toHaveLength(37);
-      view.handleInput("\u001b"); // back to the picker
-    });
-    host.drivers.push((_view, done) => done(undefined)); // esc closes the picker
-    await host.commands.get("transcript").handler("", host.ctx);
-
-    expect(pickerText).toContain("Run transcripts");
-    expect(pickerText).toContain("Version check");
-    expect(pickerText).toContain("Line counts");
-    expect(pickerText).not.toContain("no transcript yet");
-    expect(transcriptText).toContain("Report the version.");
-    expect(transcriptText).toContain("Version 0.1.0.");
-    expect(host.overlays.filter(option => option === undefined)).toHaveLength(1); // only the transcript is full screen
-
-    // An id prefix opens directly, with no picker at all.
-    let direct = "";
-    host.drivers.push((view, done) => { direct = view.render(100).join("\n"); done(undefined); });
-    await host.commands.get("transcript").handler("beta-2", host.ctx);
-    expect(direct).toContain("Counting lines.");
-    expect(direct).not.toContain("Report the version.");
-
-    // A label fragment works too; an unknown query only notifies.
-    host.drivers.push((view, done) => { done(undefined); expect(view.render(100).join("\n")).toContain("Report the version."); });
-    await host.commands.get("transcript").handler("version check", host.ctx);
-    host.drivers.length = 0;
-    await host.commands.get("transcript").handler("nope", host.ctx);
-    expect(host.notified.join("\n")).toContain("No Fabric run matches 'nope'");
-  } finally {
-    host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup();
-  }
+    await host.commands.get("agents").handler("", host.ctx);
+    const state = JSON.parse(readFileSync(join(host.dir, "state.json"), "utf8"));
+    expect(state.agents.parent.status).toBe("cancelled");
+    expect(state.agents.kid.status).toBe("cancelled");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
 test("a stray Fabric environment never binds a test to the live root", async () => {
-  // Exactly the situation inside a Fabric child: both variables point at a real run.
-  const liveRoot = "a-root-that-is-not-the-test-root";
-  process.env.PI_FABRIC_ROOT = liveRoot;
+  process.env.PI_FABRIC_ROOT = "a-root-that-is-not-the-test-root";
   process.env.PI_FABRIC_AGENT = "some-child";
   const rootId = randomUUID();
   const host = harness(rootId, { only: { id: "only", label: "Test run", model: "terra", task: "t", status: "running" } });
   try {
     fabric(host.pi);
-    // Read the root the extension actually bound: it must be the harness's, not the live one.
     expect(process.env.PI_FABRIC_ROOT).toBeUndefined();
     expect(process.env.PI_FABRIC_AGENT).toBeUndefined();
     host.events.get("session_start")!({}, host.ctx);
-    expect(host.statuses.at(-1)![1]).toContain("1 running");
-    const runs = await host.tools.get("agent_status").execute("call", {}, undefined, undefined, host.ctx);
-    expect(runs.content[0].text).toContain("Test run");
-  } finally {
-    host.events.get("session_shutdown")?.({}, host.ctx);
-    host.cleanup();
-  }
+    const rows = host.widgets.get("pi-fabric-agents")({}, theme).render(100).join("\n");
+    expect(rows).toContain("Test run");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
+
+
+test("cancelling a group row cancels every member of that spawn batch", async () => {
+  const rootId = randomUUID();
+  const host = harness(rootId, {
+    "alpha-1111": { id: "alpha-1111", label: "Alpha", model: "qwen", task: "t", status: "running", batchId: "call-1", startedAt: new Date().toISOString() },
+    "beta-2222": { id: "beta-2222", label: "Beta", model: "qwen", task: "t", status: "running", batchId: "call-1", startedAt: new Date().toISOString() },
+  });
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    host.drivers.push((view, done) => {
+      view.handleInput("j");   // the group row
+      view.handleInput("x");
+      view.handleInput("y");
+      done(undefined);
+    });
+    await host.commands.get("agents").handler("", host.ctx);
+    const state = JSON.parse(readFileSync(join(host.dir, "state.json"), "utf8"));
+    expect(state.agents["alpha-1111"].status).toBe("cancelled");
+    expect(state.agents["beta-2222"].status).toBe("cancelled");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });

@@ -14,6 +14,8 @@ import {
   type Component,
 } from "@earendil-works/pi-tui";
 import { clean } from "./activity.ts";
+import { agentBand, paintAgent, renderAgentRow, type AgentRow, type AgentRowStatus } from "./agents.ts";
+export type { AgentRow, AgentRowStatus } from "./agents.ts";
 
 export type FabricAgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
 
@@ -21,6 +23,10 @@ export type FabricAgentStatus = "queued" | "running" | "waiting" | "done" | "err
 export interface FabricTheme {
   fg(color: "text" | "accent" | "muted" | "dim" | "success" | "error" | "warning" | "border" | "borderAccent", text: string): string;
   bold(text: string): string;
+  /** Present on Pi's real theme; lets agents carry generated colours rather than theme tokens. */
+  style?(text: string, style: { fg?: unknown; bg?: unknown; bold?: boolean }): string;
+  /** Dark or light, used to pick a readable lightness for generated agent colours. */
+  appearance?: "dark" | "light";
 }
 
 /** A serialisable agent row shared by all three surfaces. */
@@ -115,139 +121,6 @@ export function renderComparisonResultCard(data: ComparisonCardData, theme: Fabr
   const left = renderResultCard(data.left, theme, cardWidth, maxBody);
   const right = renderResultCard(data.right, theme, cardWidth, maxBody);
   return [...title, ...left.map((line, index) => truncateToWidth(plainPad(line, cardWidth) + " ".repeat(gap) + (right[index] ?? ""), width))];
-}
-
-export type InspectorTab = "team" | "activity" | "tools" | "result" | "patch" | "compare";
-const inspectorTabs: InspectorTab[] = ["team", "activity", "tools", "result", "patch", "compare"];
-export interface InspectorData {
-  title?: string;
-  agents: readonly FabricAgentView[];
-  /** Number of content rows visible at once. Default: 14. */
-  maxRows?: number;
-}
-export interface InspectorOptions {
-  theme: FabricTheme;
-  data: InspectorData;
-  onChange?: (state: Readonly<InspectorState>) => void;
-  onClose?: () => void;
-  /** Called on Enter for the selected agent; the caller usually opens its transcript. */
-  onOpen?: (agent: FabricAgentView) => void;
-  /** Called on `a`; the caller flips its pruned/all filter and re-supplies the data. */
-  onToggleFilter?: () => void;
-}
-export interface InspectorState {
-  selectedId?: string;
-  tab: InspectorTab;
-  pinnedIds: readonly string[];
-  scrollOffset: number;
-}
-
-/**
- * Interactive overlay component for `/team`. Keys: ↑/↓ or j/k select,
- * ←/→ or tab switch tabs, p pin, home/end jump, page keys scroll, esc closes.
- * Pinning is local UI state; callers can persist `getState()` if desired.
- */
-export class LiveTeamInspectorOverlay implements Component {
-  private readonly theme: FabricTheme;
-  private data: InspectorData;
-  private selected = 0;
-  private tab: InspectorTab = "team";
-  private scrollOffset = 0;
-  private readonly pinned = new Set<string>();
-  private readonly onChange?: InspectorOptions["onChange"];
-  private readonly onClose?: () => void;
-  private readonly onOpen?: InspectorOptions["onOpen"];
-  private readonly onToggleFilter?: InspectorOptions["onToggleFilter"];
-
-  constructor(options: InspectorOptions) {
-    this.theme = options.theme;
-    this.data = options.data;
-    this.onChange = options.onChange;
-    this.onClose = options.onClose;
-    this.onOpen = options.onOpen;
-    this.onToggleFilter = options.onToggleFilter;
-  }
-  getState(): InspectorState {
-    return { selectedId: this.agents()[this.selected]?.id, tab: this.tab, pinnedIds: [...this.pinned], scrollOffset: this.scrollOffset };
-  }
-  setData(data: InspectorData): void {
-    const selectedId = this.agents()[this.selected]?.id;
-    this.data = data;
-    const next = this.agents().findIndex((agent) => agent.id === selectedId);
-    this.selected = Math.max(0, next);
-    this.clamp(); this.changed();
-  }
-  invalidate(): void { /* Render is calculated fresh so theme changes are safe. */ }
-  handleInput(input: string): void {
-    const agents = this.agents();
-    const selectedId = agents[this.selected]?.id;
-    let changedPins = false;
-    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
-    if (matchesKey(input, Key.enter)) { const current = agents[this.selected]; if (current) this.onOpen?.(current); return; }
-    if (input === "a") { this.onToggleFilter?.(); return; }
-    if (matchesKey(input, Key.up) || input === "k") this.selected = Math.max(0, this.selected - 1);
-    else if (matchesKey(input, Key.down) || input === "j") this.selected = Math.min(Math.max(0, agents.length - 1), this.selected + 1);
-    else if (matchesKey(input, Key.home)) this.selected = 0;
-    else if (matchesKey(input, Key.end)) this.selected = Math.max(0, agents.length - 1);
-    else if (matchesKey(input, Key.tab) || matchesKey(input, Key.right) || input === "l") this.tab = this.nextTab(1);
-    else if (matchesKey(input, Key.shift("tab")) || matchesKey(input, Key.left) || input === "h") this.tab = this.nextTab(-1);
-    else if (input === "p") { const current = agents[this.selected]; if (current) { this.pinned.has(current.id) ? this.pinned.delete(current.id) : this.pinned.add(current.id); changedPins = true; } }
-    else if (matchesKey(input, Key.pageUp)) this.scrollOffset -= this.rows();
-    else if (matchesKey(input, Key.pageDown)) this.scrollOffset += this.rows();
-    else return;
-    // Pinning changes sort order, so keep focus on the same agent rather than its old index.
-    if (changedPins && selectedId) this.selected = Math.max(0, this.agents().findIndex((agent) => agent.id === selectedId));
-    if (selectedId !== this.agents()[this.selected]?.id || (!matchesKey(input, Key.pageUp) && !matchesKey(input, Key.pageDown) && input !== "p")) this.scrollOffset = 0;
-    this.clamp(); this.changed();
-  }
-  render(width: number): string[] {
-    if (width < 1) return [];
-    const agents = this.agents(); const selected = agents[this.selected]; const rows = this.rows();
-    const tabs = inspectorTabs.map((tab) => tab === this.tab ? this.theme.fg("accent", `[${tab}]`) : this.theme.fg("muted", ` ${tab} `)).join(" ");
-    const header = `${this.data.title ?? "◆ PI FABRIC — live team"}  ${tabs}`;
-    const pinText = this.pinned.size ? ` · ${this.pinned.size} pinned` : "";
-    const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(header)), width), truncateToWidth(this.theme.fg("muted", `${countSummary(agents)}${pinText}`), width)];
-    const body = this.tab === "team" ? this.teamLines(agents, width) : this.tab === "compare" ? this.compareLines(agents, width) : this.detailLines(selected, width);
-    // Selection never disappears below the viewport while navigating the team tab.
-    if (this.tab === "team") {
-      if (this.selected < this.scrollOffset) this.scrollOffset = this.selected;
-      if (this.selected >= this.scrollOffset + rows) this.scrollOffset = this.selected - rows + 1;
-    }
-    const maxOffset = Math.max(0, body.length - rows);
-    this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
-    lines.push(...body.slice(this.scrollOffset, this.scrollOffset + rows));
-    if (body.length > rows) lines.push(truncateToWidth(this.theme.fg("dim", `rows ${this.scrollOffset + 1}-${Math.min(body.length, this.scrollOffset + rows)}/${body.length}`), width));
-    lines.push(truncateToWidth(this.theme.fg("dim", "↑↓/j k select · enter transcript · tab/←→ tabs · p pin · a filter · pgup/pgdn scroll · esc close"), width));
-    return lines.map((line) => truncateToWidth(line, width));
-  }
-  private agents(): FabricAgentView[] { return [...this.data.agents].sort((a, b) => Number(this.pinned.has(b.id)) - Number(this.pinned.has(a.id))); }
-  private rows(): number { return Math.max(3, this.data.maxRows ?? 14); }
-  private nextTab(delta: number): InspectorTab { const tabs = inspectorTabs; return tabs[(tabs.indexOf(this.tab) + delta + tabs.length) % tabs.length]!; }
-  private teamLines(agents: readonly FabricAgentView[], width: number): string[] {
-    if (!agents.length) return [this.theme.fg("dim", "No delegated agents yet.")];
-    return agents.map((agent, index) => {
-      const cursor = index === this.selected ? this.theme.fg("accent", "›") : " ";
-      const pin = this.pinned.has(agent.id) ? this.theme.fg("warning", "★") : " ";
-      return truncateToWidth(`${cursor}${pin} ${this.theme.fg(statusColor[agent.status], statusIcon[agent.status])} ${agent.label} ${this.theme.fg("dim", `${short(agent.id)} · ${agent.model} · ${agent.status}`)}`, width);
-    });
-  }
-  private detailLines(agent: FabricAgentView | undefined, width: number): string[] {
-    if (!agent) return [this.theme.fg("dim", "No agent selected.")];
-    const source = this.tab === "activity" ? agent.events : this.tab === "tools" ? agent.tools : this.tab === "result" ? agent.result : agent.patch;
-    const fallback = this.tab === "result" ? (agent.error ?? "No result packet yet.") : "No patch captured yet.";
-    const title = `${agent.label} · ${short(agent.id)} · ${agent.status}`;
-    const path = this.tab === "patch" ? agent.patchPath : this.tab === "result" ? agent.resultPath : undefined;
-    const transcript = agent.sessionPath ? [this.theme.fg("dim", `transcript: ${agent.sessionPath}`)] : [];
-    return [this.theme.fg("accent", this.theme.bold(title)), ...(path ? wrapTextWithAnsi(path, Math.max(1, width)) : []), ...transcript.map(line => truncateToWidth(line, width)), ...(source || fallback).split("\n").flatMap(line => wrapTextWithAnsi(line || " ", Math.max(1, width)))];
-  }
-  private compareLines(agents: FabricAgentView[], width: number): string[] {
-    const pinned = agents.filter(agent => this.pinned.has(agent.id)).slice(0, 2);
-    if (pinned.length < 2) return ["Pin two agents with p in the team tab to compare."];
-    const card = (agent: FabricAgentView): ComparisonResult => ({ label: agent.label, summary: agent.result || agent.activity || agent.status, details: agent.error, metrics: { model: agent.model, status: agent.status } });
-    return renderComparisonResultCard({ left: card(pinned[0]!), right: card(pinned[1]!), maxBodyLines: 12 }, this.theme, width);
-  }
-  private clamp(): void { this.selected = Math.min(Math.max(0, this.selected), Math.max(0, this.agents().length - 1)); this.scrollOffset = Math.max(0, this.scrollOffset); }
-  private changed(): void { this.invalidate(); this.onChange?.(this.getState()); }
 }
 
 /* ---------- full-run transcript ---------- */
@@ -354,38 +227,51 @@ export function parseSessionText(text: string): TranscriptEntry[] {
   return text.split("\n").flatMap(parseSessionLine);
 }
 
-function describeEntry(entry: TranscriptEntry, theme: FabricTheme): { label: string; body: string } {
+/** Message header labels; `band` paints them in the owning agent's hue. */
+function describeEntry(entry: TranscriptEntry, theme: FabricTheme, band?: (text: string) => string): { label: string; body: string } {
+  const paint = band ?? ((text: string) => text);
   switch (entry.kind) {
     case "user": return { label: theme.fg("accent", theme.bold("You")), body: entry.text };
-    case "assistant": return { label: theme.fg("text", theme.bold("Assistant")), body: entry.text };
-    case "thinking": return { label: theme.fg("dim", "thinking"), body: entry.text };
-    case "toolCall": return { label: theme.fg("warning", `⚙ ${entry.name}`), body: entry.args };
-    case "toolResult": return { label: theme.fg(entry.isError ? "error" : "muted", `${entry.isError ? "✗" : "✓"} ${entry.name}`), body: entry.text };
+    case "assistant": return { label: paint(theme.bold("Assistant")), body: entry.text };
+    case "thinking": return { label: paint("thinking"), body: entry.text };
+    case "toolCall": return { label: paint(`⚙ ${entry.name}`), body: entry.args };
+    case "toolResult": return { label: paint(`${entry.isError ? "✗" : "✓"} ${entry.name}`), body: entry.text };
     case "note": return { label: theme.fg("dim", "·"), body: entry.text };
   }
 }
 
-export interface TranscriptViewerOptions {
-  theme: FabricTheme;
-  title: string;
-  /** Reloaded by `refresh()` so a still-running agent can be followed live. */
+/* ---------- transcript panes ---------- */
+
+/** What one column of the transcript screen needs to know about its agent. */
+export interface TranscriptPaneSpec {
+  id: string;
+  label: string;
+  model: string;
+  status: AgentRowStatus;
+  hue: number;
+  /** The coordinator chat, painted with the theme accent rather than a generated hue. */
+  main?: boolean;
+  /** Saved session file this pane replays. */
+  path?: string;
+  /** Initial load; live updates arrive through the overlay's `appendText`. */
   read?: () => TranscriptSource;
-  onClose?: () => void;
-  /** Visible body rows. Default: 20. */
+}
+
+export interface TranscriptPaneOptions {
+  theme: FabricTheme;
+  spec: TranscriptPaneSpec;
+  /** Body rows before `setHeight` is called. Default: 20. */
   maxRows?: number;
 }
 
 /**
- * Full-window replay of a saved session: user/assistant text, thinking, tool
- * calls, and tool results in order. Keys: pgup/pgdn or k/j scroll, home/end
- * (g/G) jump, esc closes. Every rendered line is bounded to the given width.
+ * One agent's conversation as a column: a hue-tinted header, a rule, and the
+ * replayed session body. Parsing, incremental append, scrolling and width safety
+ * live here; the overlay arranges one or two of these side by side.
  */
-export class TranscriptViewerOverlay implements Component {
+export class TranscriptPane {
   private readonly theme: FabricTheme;
-  private title: string;
-  private readonly read?: () => TranscriptSource;
-  private readonly onClose?: () => void;
-  private maxRows: number;
+  private readonly spec: TranscriptPaneSpec;
   private source: TranscriptSource = { text: "" };
   private entries: TranscriptEntry[] = [];
   /** Index in `source.text` after the last parsed complete line. */
@@ -393,39 +279,22 @@ export class TranscriptViewerOverlay implements Component {
   private cache?: { width: number; text: string; lines: string[] };
   private offset = 0;
   private maxOffset = 0;
+  private maxRows: number;
 
-  constructor(options: TranscriptViewerOptions) {
+  constructor(options: TranscriptPaneOptions) {
     this.theme = options.theme;
-    this.title = options.title;
-    this.read = options.read;
-    this.onClose = options.onClose;
+    this.spec = options.spec;
     this.maxRows = Math.max(3, options.maxRows ?? 20);
-    if (this.read) this.setSource(this.read());
+    if (this.spec.read) this.setSource(this.spec.read());
   }
-  /** Theme changes drop the wrapped layout. */
+  get id(): string { return this.spec.id; }
+  get label(): string { return this.spec.label; }
+  get hue(): number { return this.spec.hue; }
+  /** Replaces the agent this pane shows (the same pane is reused across opens). */
+  setSpec(spec: TranscriptPaneSpec): void { (this.spec as { hue: number }).hue = spec.hue; }
   invalidate(): void { this.cache = undefined; }
-  /** The header is not part of the wrapped layout, so a live status needs no relayout. */
-  setTitle(title: string): void { this.title = title; }
-  /**
-   * Caps the body so this view fits in `rows` lines, leaving room for its own
-   * chrome (title, count line, two rules, hint, optional notice). Called from
-   * render so a terminal resize is picked up without reopening the transcript.
-   */
-  setHeight(rows: number): void {
-    const chrome = 5 + (this.source.notice ? 1 : 0);
-    this.maxRows = Math.max(3, Math.floor(rows) - chrome);
-  }
-  /** Re-reads the source; returns true when the transcript changed. */
-  refresh(): boolean {
-    if (!this.read) return false;
-    const next = this.read();
-    if (next.text === this.source.text && next.notice === this.source.notice) return false;
-    // Keep following the tail only when the reader was already at the tail.
-    const following = this.offset >= this.maxOffset && this.maxOffset > 0;
-    this.setSource(next);
-    if (following) this.offset = Number.MAX_SAFE_INTEGER;
-    return true;
-  }
+  /** Sizes the body so header + rule + body fills `height` lines exactly. */
+  setHeight(height: number): void { this.maxRows = Math.max(3, Math.floor(height) - 2); }
   setSource(source: TranscriptSource): void {
     this.source = source;
     // Only complete lines are parsed; a half-written trailing line waits for its newline.
@@ -435,11 +304,7 @@ export class TranscriptViewerOverlay implements Component {
     this.cache = undefined;
     this.maxOffset = 0;
   }
-  /**
-   * Appends newly written session bytes, parsing only the new complete lines, so
-   * following a live run costs the size of what was added rather than the file.
-   * A trailing partial line is kept for the next call and never dropped.
-   */
+  /** Parses only newly written lines, so following a live run does not re-read the file. */
   appendText(chunk: string): boolean {
     if (!chunk) return false;
     this.source = { ...this.source, text: this.source.text + chunk };
@@ -452,50 +317,56 @@ export class TranscriptViewerOverlay implements Component {
     this.cache = undefined;
     return true;
   }
-  getState(): { offset: number; maxOffset: number; entries: number; rows: number } {
-    return { offset: this.offset, maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows };
-  }
-  handleInput(input: string): void {
-    const page = Math.max(1, this.rows() - 2);
-    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+  /** Handles the scroll keys; returns true when the view moved. */
+  scroll(input: string): boolean {
+    const page = Math.max(1, this.maxRows - 2);
+    const before = this.offset;
     if (matchesKey(input, Key.pageDown) || input === " " || input === "j") this.offset += page;
     else if (matchesKey(input, Key.pageUp) || input === "k") this.offset -= page;
     else if (matchesKey(input, Key.down)) this.offset += 1;
     else if (matchesKey(input, Key.up)) this.offset -= 1;
     else if (matchesKey(input, Key.home) || input === "g") this.offset = 0;
-    else if (matchesKey(input, Key.end) || input === "G") this.offset = this.maxOffset;
-    else return;
+    // "End" is resolved against the next layout, so it lands at the real end even
+    // when the content or the width changed since the last render.
+    else if (matchesKey(input, Key.end) || input === "G") { this.offset = Number.MAX_SAFE_INTEGER; return true; }
+    else return false;
     this.offset = Math.min(Math.max(0, this.offset), this.maxOffset);
+    return this.offset !== before;
   }
-  render(width: number): string[] {
+  getState(): { offset: number; maxOffset: number; entries: number; rows: number } {
+    // The "jump to end" sentinel is resolved by the next render; report it already resolved.
+    const offset = this.offset === Number.MAX_SAFE_INTEGER ? this.maxOffset : this.offset;
+    return { offset, maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows };
+  }
+  /** Header, rule and body, padded to exactly `height` lines. */
+  render(width: number, height: number, focused = false): string[] {
     if (width < 1) return [];
+    const rows = Math.max(1, height - 2);
     const body = this.bodyLines(width);
-    const rows = this.rows();
     const max = Math.max(0, body.length - rows);
     this.maxOffset = max;
     this.offset = Math.min(Math.max(0, this.offset), max);
-    const entries = this.entries.length;
-    const meta = entries
-      ? `${entries} entries · rows ${this.offset + 1}-${Math.min(body.length, this.offset + rows)}/${body.length}`
-      : "No transcript entries saved yet.";
-    const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(this.title)), width), truncateToWidth(this.theme.fg("muted", meta), width)];
-    if (this.source.notice) lines.push(truncateToWidth(this.theme.fg("warning", this.source.notice), width));
-    lines.push(this.rule(width));
+    const name = this.spec.main ? this.theme.fg("accent", this.theme.bold(this.spec.label)) : paintAgent(this.theme, this.spec.hue, this.spec.label);
+    const meta = [this.spec.model, this.spec.status].filter(Boolean).join(" · ");
+    const cursor = focused ? this.theme.fg("accent", "› ") : "";
+    const header = truncateToWidth(`${cursor}${name} ${this.theme.fg("muted", `· ${meta}`)}`, width);
+    const tint = this.spec.main ? this.theme.fg("borderAccent", "─".repeat(Math.max(1, width))) : paintAgent(this.theme, this.spec.hue, "─".repeat(Math.max(1, width)));
+    const rule = truncateToWidth(tint, width);
     const visible = body.slice(this.offset, this.offset + rows);
-    if (!visible.length) lines.push(truncateToWidth(this.theme.fg("dim", "This run has not written any messages yet."), width));
-    lines.push(...visible);
-    lines.push(this.rule(width));
-    lines.push(truncateToWidth(this.theme.fg("dim", "pgup/pgdn scroll · home/end jump · esc back"), width));
-    return lines.map((line) => truncateToWidth(line, width));
+    const lines = [header, rule, ...visible];
+    while (lines.length < height) lines.push("");
+    return lines.slice(0, Math.max(1, height)).map((line) => truncateToWidth(line, width));
   }
-  private rule(width: number): string { return truncateToWidth(this.theme.fg("border", "─".repeat(Math.max(1, width))), width); }
-  private rows(): number { return Math.max(3, this.maxRows); }
   private bodyLines(width: number): string[] {
     if (this.cache && this.cache.width === width && this.cache.text === this.source.text) return this.cache.lines;
     const inner = Math.max(1, width - 2);
+    const band = this.theme.style ? agentBand(this.theme, this.spec.hue) : undefined;
+    const paint = band && this.theme.style
+      ? (text: string) => this.theme.style!(text, { fg: band.fg, bg: band.bg })
+      : undefined;
     const lines: string[] = [];
     for (const entry of this.entries) {
-      const { label, body } = describeEntry(entry, this.theme);
+      const { label, body } = describeEntry(entry, this.theme, paint);
       lines.push(truncateToWidth(label, width));
       for (const raw of body.split("\n")) {
         for (const wrapped of wrapTextWithAnsi(raw || " ", inner)) lines.push(truncateToWidth(`  ${wrapped}`, width));
@@ -508,91 +379,180 @@ export class TranscriptViewerOverlay implements Component {
   }
 }
 
-/* ---------- run picker ---------- */
+/* ---------- agent transcript screen ---------- */
 
-/** Short relative age for run lists. Pure so lists stay deterministic in tests. */
-export function relativeAge(iso: string | undefined, now = Date.now()): string {
-  if (!iso) return "";
-  const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return "";
-  const seconds = Math.max(0, Math.round((now - then) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
+/** Below this width two columns cannot both stay readable. */
+export const MIN_TWO_COLUMN_WIDTH = 80;
 
-export interface TranscriptPickerOptions {
+export interface AgentTranscriptOptions {
   theme: FabricTheme;
-  /** Runs in the order they should be listed (the caller sorts newest first). */
-  runs: readonly FabricAgentView[];
-  onOpen: (run: FabricAgentView) => void;
+  specs: readonly TranscriptPaneSpec[];
   onClose?: () => void;
-  /** Visible list rows. Default: 12. */
-  maxRows?: number;
 }
 
 /**
- * Lists Fabric runs so a transcript can be opened without going through `/team`.
- * Keys: ↑/↓ or j/k select, home/end jump, enter opens, esc closes.
+ * The full-window transcript screen: one agent, or two side by side (a comparison
+ * group). Each column keeps its own parser, scroll position and hue. Keys: tab
+ * switches focus, `s` toggles one/two columns, page keys scroll the focused
+ * column, esc steps back.
  */
-export class TranscriptPickerOverlay implements Component {
+export class AgentTranscriptOverlay implements Component {
   private readonly theme: FabricTheme;
-  private readonly onOpen: (run: FabricAgentView) => void;
+  private readonly panes: TranscriptPane[];
   private readonly onClose?: () => void;
-  private readonly maxRows: number;
-  private runs: FabricAgentView[];
-  private selected = 0;
+  private columns: 1 | 2;
+  private focus = 0;
+  private height = 24;
 
-  constructor(options: TranscriptPickerOptions) {
+  constructor(options: AgentTranscriptOptions) {
+    this.theme = options.theme;
+    this.onClose = options.onClose;
+    this.panes = options.specs.slice(0, 2).map((spec) => new TranscriptPane({ theme: options.theme, spec }));
+    this.columns = this.panes.length > 1 ? 2 : 1;
+  }
+  /** All panes, including any not currently visible because the pair is capped at two. */
+  get allPanes(): readonly TranscriptPane[] { return this.panes; }
+  paneAt(index: number): TranscriptPane | undefined { return this.panes[index]; }
+  setFocus(index: number): void { this.focus = Math.min(Math.max(0, index), Math.max(0, this.panes.length - 1)); }
+  setHeight(rows: number): void { this.height = Math.max(6, Math.floor(rows)); }
+  invalidate(): void { for (const pane of this.panes) pane.invalidate(); }
+  /** Feeds live bytes to a pane by agent id; returns true when anything new parsed. */
+  appendText(id: string, chunk: string): boolean {
+    const pane = this.panes.find((item) => item.id === id);
+    return pane ? pane.appendText(chunk) : false;
+  }
+  setSource(id: string, source: TranscriptSource): void {
+    this.panes.find((item) => item.id === id)?.setSource(source);
+  }
+  private effectiveColumns(width: number): 1 | 2 {
+    return this.columns === 2 && this.panes.length > 1 && width >= MIN_TWO_COLUMN_WIDTH ? 2 : 1;
+  }
+  handleInput(input: string): void {
+    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+    if (input === "s" && this.panes.length > 1) { this.columns = this.columns === 2 ? 1 : 2; return; }
+    if (matchesKey(input, Key.tab) && this.panes.length > 1) { this.focus = (this.focus + 1) % this.panes.length; return; }
+    const focused = this.panes[this.focus];
+    if (focused) focused.scroll(input);
+  }
+  render(width: number): string[] {
+    if (width < 1) return [];
+    const height = this.height;
+    const bodyHeight = Math.max(3, height - 2);
+    const columns = this.effectiveColumns(width);
+    const focused = this.panes[this.focus] ?? this.panes[0];
+    if (!focused) return Array.from({ length: height }, () => "");
+    const footer = this.footer(width, columns);
+    if (columns === 1 || this.panes.length < 2) {
+      const lines = focused.render(width, bodyHeight, false);
+      return [...lines, "", footer].slice(0, height).map((line) => truncateToWidth(line, width));
+    }
+    const colWidth = Math.max(1, Math.floor((width - 1) / 2));
+    const gap = truncateToWidth(this.theme.fg("border", "│"), 1);
+    const left = this.panes[0]!.render(colWidth, bodyHeight, this.focus === 0);
+    const right = this.panes[1]!.render(colWidth, bodyHeight, this.focus === 1);
+    const lines: string[] = [];
+    for (let index = 0; index < bodyHeight; index++) {
+      const l = truncateToWidth(left[index] ?? "", colWidth);
+      const r = truncateToWidth(right[index] ?? "", colWidth);
+      const padded = l + " ".repeat(Math.max(0, colWidth - visibleWidth(l)));
+      lines.push(truncateToWidth(`${padded}${gap}${r}`, width));
+    }
+    return [...lines, "", footer].slice(0, height).map((line) => truncateToWidth(line, width));
+  }
+  private footer(width: number, columns: 1 | 2): string {
+    // The narrow-terminal note goes first so a truncation cannot hide the explanation.
+    const parts = ["tab focus", "s one/two", "pgup/pgdn scroll", "esc back"];
+    const narrow = this.panes.length > 1 && columns === 1 && width < MIN_TWO_COLUMN_WIDTH;
+    if (narrow) return truncateToWidth(`${this.theme.fg("warning", "one column: too narrow for two")} ${this.theme.fg("dim", parts.join(" · "))}`, width);
+    return truncateToWidth(this.theme.fg("dim", parts.join(" · ")), width);
+  }
+}
+
+/* ---------- agents screen ---------- */
+
+export interface AgentsScreenOptions {
+  theme: FabricTheme;
+  rows: readonly AgentRow[];
+  onOpen: (row: AgentRow) => void;
+  /** Flip the collapsed state of a row that has descendants. */
+  onToggle: (row: AgentRow) => void;
+  /** Ask the caller to cancel this agent (and its descendants). */
+  onCancel: (row: AgentRow) => void;
+  onClose: () => void;
+}
+
+/**
+ * The `/agents` list: main first, then the tree, with group rows, collapse and an
+ * inline cancel confirmation. It is the only keyboard path to a transcript.
+ */
+export class AgentsScreen implements Component {
+  private readonly theme: FabricTheme;
+  private readonly onOpen: AgentsScreenOptions["onOpen"];
+  private readonly onToggle: AgentsScreenOptions["onToggle"];
+  private readonly onCancel: AgentsScreenOptions["onCancel"];
+  private readonly onClose: AgentsScreenOptions["onClose"];
+  private rows: AgentRow[];
+  private selected = 0;
+  private offset = 0;
+  private height = 20;
+  private confirm?: AgentRow;
+
+  constructor(options: AgentsScreenOptions) {
     this.theme = options.theme;
     this.onOpen = options.onOpen;
+    this.onToggle = options.onToggle;
+    this.onCancel = options.onCancel;
     this.onClose = options.onClose;
-    this.maxRows = Math.max(3, options.maxRows ?? 12);
-    this.runs = [...options.runs];
+    this.rows = [...options.rows];
   }
-  /** Keeps the same run selected while the list refreshes under an open picker. */
-  setRuns(runs: readonly FabricAgentView[]): void {
-    const selectedId = this.runs[this.selected]?.id;
-    this.runs = [...runs];
-    const next = this.runs.findIndex((run) => run.id === selectedId);
-    this.selected = Math.max(0, next);
+  setHeight(rows: number): void { this.height = Math.max(6, Math.floor(rows)); }
+  /** Keeps the same selection when rows change, and clamps when it expires underneath. */
+  setRows(rows: readonly AgentRow[]): void {
+    const selectedId = this.rows[this.selected]?.id;
+    this.rows = [...rows];
+    const next = this.rows.findIndex((row) => row.id === selectedId);
+    this.selected = next >= 0 ? next : Math.min(this.selected, Math.max(0, this.rows.length - 1));
     this.clamp();
+  }
+  getState(): { selectedId?: string; confirming?: string } {
+    return { selectedId: this.rows[this.selected]?.id, confirming: this.confirm?.id };
   }
   invalidate(): void { /* Rendering is calculated fresh each frame. */ }
   handleInput(input: string): void {
-    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
-    if (matchesKey(input, Key.enter)) { const run = this.runs[this.selected]; if (run) this.onOpen(run); return; }
+    if (this.confirm) {
+      if (input === "y" || input === "Y") { const row = this.confirm; this.confirm = undefined; this.onCancel(row); return; }
+      if (input === "n" || input === "N" || matchesKey(input, Key.escape)) { this.confirm = undefined; return; }
+      return;
+    }
+    if (matchesKey(input, Key.escape)) { this.onClose(); return; }
+    if (matchesKey(input, Key.enter)) { const row = this.rows[this.selected]; if (row) this.onOpen(row); return; }
+    if (input === "x") { const row = this.rows[this.selected]; if (row && row.kind !== "main") this.confirm = row; return; }
+    if (matchesKey(input, Key.right) || input === " ") { const row = this.rows[this.selected]; if (row?.collapsed) this.onToggle(row); return; }
+    if (matchesKey(input, Key.left)) { const row = this.rows[this.selected]; if (row && row.collapsed === false) this.onToggle(row); return; }
     if (matchesKey(input, Key.up) || input === "k") this.selected -= 1;
     else if (matchesKey(input, Key.down) || input === "j") this.selected += 1;
     else if (matchesKey(input, Key.home) || input === "g") this.selected = 0;
-    else if (matchesKey(input, Key.end) || input === "G") this.selected = this.runs.length - 1;
+    else if (matchesKey(input, Key.end) || input === "G") this.selected = this.rows.length - 1;
     else return;
     this.clamp();
   }
   render(width: number): string[] {
     if (width < 1) return [];
-    const rows = this.rows();
-    const start = Math.max(0, Math.min(this.selected - Math.floor(rows / 2), Math.max(0, this.runs.length - rows)));
-    const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(`Run transcripts  ${this.runs.length} run${this.runs.length === 1 ? "" : "s"}`)), width)];
-    if (!this.runs.length) {
-      lines.push(truncateToWidth(this.theme.fg("dim", "No Fabric runs in this session yet. Spawn agents, then reopen this list."), width));
-      lines.push(truncateToWidth(this.theme.fg("dim", "esc close"), width));
-      return lines.map((line) => truncateToWidth(line, width));
-    }
-    for (const [index, run] of this.runs.slice(start, start + rows).entries()) {
-      const cursor = start + index === this.selected ? this.theme.fg("accent", "›") : " ";
-      const icon = this.theme.fg(statusColor[run.status], statusIcon[run.status]);
-      const meta = [short(run.id), run.model, run.status, relativeAge(run.finishedAt ?? run.startedAt)].filter(Boolean).join(" · ");
-      const missing = run.sessionPath ? "" : this.theme.fg("warning", " · no transcript yet");
-      lines.push(truncateToWidth(`${cursor} ${icon} ${run.label} ${this.theme.fg("dim", meta)}${missing}`, width));
-    }
-    if (this.runs.length > rows) lines.push(truncateToWidth(this.theme.fg("dim", `rows ${start + 1}-${Math.min(this.runs.length, start + rows)}/${this.runs.length}`), width));
-    lines.push(truncateToWidth(this.theme.fg("dim", "↑↓/j k select · enter open transcript · esc close"), width));
-    return lines.map((line) => truncateToWidth(line, width));
+    const rows = Math.max(3, this.height - 3);
+    const start = Math.max(0, Math.min(this.selected - Math.floor(rows / 2), Math.max(0, this.rows.length - rows)));
+    // Count agents, not rows: a collapsed group stands for all of its members.
+    const live = this.rows.reduce((total, row) => total + (row.kind === "group" ? (row.members?.length ?? 0) : 1), 0);
+    const title = truncateToWidth(this.theme.fg("accent", this.theme.bold(`Agents  ${live} live`)), width);
+    const list = this.rows.length
+      ? this.rows.slice(start, start + rows).map((row, index) => renderAgentRow(row, this.theme, width, { cursor: start + index === this.selected }))
+      : [this.theme.fg("dim", "No live agents. Delegated agents appear here as soon as they spawn.")];
+    const position = this.rows.length > rows ? `rows ${start + 1}-${Math.min(this.rows.length, start + rows)}/${this.rows.length} · ` : "";
+    const footer = this.confirm
+      ? this.theme.fg("warning", this.confirm.kind === "group"
+        ? `Cancel all ${this.confirm.members?.length ?? 0} agents in this group (and their descendants)? y/n`
+        : `Cancel "${this.confirm.label}" and its descendants? y/n`)
+      : this.theme.fg("dim", `${position}↑↓ select · → expand · ← collapse · enter open · x cancel · esc close`);
+    return [title, ...list, "", truncateToWidth(footer, width)].slice(0, this.height).map((line) => truncateToWidth(line, width));
   }
-  private rows(): number { return Math.max(3, this.maxRows); }
-  private clamp(): void { this.selected = Math.min(Math.max(0, this.selected), Math.max(0, this.runs.length - 1)); }
+  private clamp(): void { this.selected = Math.min(Math.max(0, this.selected), Math.max(0, this.rows.length - 1)); }
 }

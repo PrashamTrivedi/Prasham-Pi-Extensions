@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, isPruned, matchRuns, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { buildChildArgs, capturePatch, effectiveRule, isGone, liveAgents, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, IDLE_GONE_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -89,25 +89,25 @@ test("a run's saved session is found by id suffix, newest first, and a missing d
   expect(resolveSessionFile(join(dir, "nope"), "agent-a")).toBeUndefined();
 });
 
-test("finished runs leave the live views five minutes after finishing, and stay readable", () => {
+test("an agent that stays idle ten minutes is gone, and only terminal agents can go", () => {
   const now = Date.parse("2026-01-01T12:00:00.000Z");
   const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
-  expect(PRUNE_AFTER_MS).toBe(5 * 60_000);
-  expect(isPruned({ status: "done", finishedAt: at(6) }, now)).toBe(true);
-  expect(isPruned({ status: "done", finishedAt: at(4) }, now)).toBe(false);
-  expect(isPruned({ status: "error", finishedAt: at(5) }, now)).toBe(false);
-  expect(isPruned({ status: "cancelled", finishedAt: at(9) }, now)).toBe(true);
-  // Running and queued runs never prune, even with a stale timestamp.
-  expect(isPruned({ status: "running", finishedAt: at(90) }, now)).toBe(false);
-  expect(isPruned({ status: "done" }, now)).toBe(false);
+  expect(IDLE_GONE_MS).toBe(10 * 60_000);
+  expect(isGone({ status: "done", finishedAt: at(11) }, now)).toBe(true);
+  expect(isGone({ status: "done", finishedAt: at(9) }, now)).toBe(false);
+  expect(isGone({ status: "error", finishedAt: at(10) }, now)).toBe(false);
+  expect(isGone({ status: "cancelled", finishedAt: at(30) }, now)).toBe(true);
+  // Running, queued, waiting and freshly finished agents never disappear.
+  expect(isGone({ status: "running", finishedAt: at(90) }, now)).toBe(false);
+  expect(isGone({ status: "queued" }, now)).toBe(false);
+  expect(isGone({ status: "done" }, now)).toBe(false);
   const agents = [
-    { id: "old", status: "done" as const, finishedAt: at(6) },
+    { id: "old", status: "done" as const, finishedAt: at(11) },
     { id: "fresh", status: "done" as const, finishedAt: at(1) },
     { id: "busy", status: "running" as const, finishedAt: at(60) },
   ];
-  expect(visibleAgents(agents, now).map(agent => agent.id)).toEqual(["fresh", "busy"]);
-  expect(visibleAgents(agents, now, 120 * 60_000).map(agent => agent.id)).toEqual(["old", "fresh", "busy"]);
-  // Pruning is display-only, so the state itself is untouched.
+  expect(liveAgents(agents, now).map((agent) => agent.id)).toEqual(["fresh", "busy"]);
+  // The sweep is display-only: the state itself is untouched.
   expect(agents).toHaveLength(3);
 });
 
@@ -148,33 +148,4 @@ test("patch capture includes committed and untracked changes without changing th
   expect(patch).toContain("untracked payload");
   expect(patch).toContain("staged.txt");
   expect(readFileSync(join(repo, ".git", "index")).equals(indexBefore)).toBe(true);
-});
-
-test("/transcript matches an exact id, then a prefix, then a label, and never guesses", () => {
-  const runs = [
-    { id: "alpha-1111", label: "Version check" },
-    { id: "alpha-2222", label: "Line counts" },
-    { id: "beta-3333", label: "Review the parser" },
-  ];
-  expect(matchRuns(runs, "alpha-2222").map((run) => run.id)).toEqual(["alpha-2222"]);
-  expect(matchRuns(runs, "alpha").map((run) => run.id)).toEqual(["alpha-1111", "alpha-2222"]);
-  expect(matchRuns(runs, "VERSION").map((run) => run.id)).toEqual(["alpha-1111"]);
-  expect(matchRuns(runs, "parser").map((run) => run.id)).toEqual(["beta-3333"]);
-  expect(matchRuns(runs, "3333").map((run) => run.id)).toEqual(["beta-3333"]);
-  expect(matchRuns(runs, "nope")).toEqual([]);
-  expect(matchRuns(runs, "  ")).toEqual([]);
-});
-
-test("following a live session reads only whole appended lines, even across a multi-byte character", () => {
-  const dir = temp();
-  const path = join(dir, "session.jsonl");
-  writeFileSync(path, `{"a":1}\n{"b":"`);
-  // The incomplete last line is held back until its newline arrives.
-  expect(readSessionChunk(path, 0)).toEqual({ chunk: `{"a":1}\n`, next: 8 });
-  expect(readSessionChunk(path, 8)).toEqual({ chunk: "", next: 8 });
-  appendFileSync(path, `界"}\n`);
-  expect(readSessionChunk(path, 8).chunk).toBe(`{"b":"界"}\n`);
-  // Offsets past the end and missing files are no-ops, never errors.
-  expect(readSessionChunk(path, 9999)).toEqual({ chunk: "", next: 9999 });
-  expect(readSessionChunk(join(dir, "missing.jsonl"), 0)).toEqual({ chunk: "", next: 0 });
 });

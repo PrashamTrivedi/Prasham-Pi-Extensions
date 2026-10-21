@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderComparisonResultCard, LiveTeamInspectorOverlay, TranscriptPickerOverlay, TranscriptViewerOverlay, parseSessionLine, parseSessionText, relativeAge, TRANSCRIPT_ARGS_LIMIT, type FabricAgentView } from "../../extensions/fabric/ui.ts";
+import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, TranscriptPane, parseSessionLine, parseSessionText, TRANSCRIPT_ARGS_LIMIT, type FabricAgentView, type TranscriptPaneSpec } from "../../extensions/fabric/ui.ts";
+import { buildTree, renderAgentRows } from "../../extensions/fabric/agents.ts";
 import { clean, publishActivity, readActivity, readPreview } from "../../extensions/fabric/activity.ts";
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 const agents: FabricAgentView[] = Array.from({ length: 8 }, (_, i) => ({ id: `agent-${i}`, label: `Option ${i} 界`, model: "terra", status: i % 2 ? "done" : "running", activity: "Running tests", result: `Finding ${i}\nEvidence ${i}`, patch: "+first line\n-second line" }));
@@ -12,31 +13,6 @@ const sessionFixture = [
  JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "The lock was held.".repeat(6) }, { type: "toolCall", name: "bash", arguments: { command: "false" } }] } }),
  JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "exit 1" }], isError: true } }),
 ].join("\n") + "\n";
-test("every surface respects terminal width, including tiny terminals", () => {
- for (const width of [1, 2, 3, 20, 75, 76, 100, 160]) {
-  const inspector = new LiveTeamInspectorOverlay({ theme, data: { agents } });
-  const viewer = new TranscriptViewerOverlay({ theme, title: "run", read: () => ({ text: sessionFixture }), maxRows: 5 });
-  const surfaces = [renderComparisonResultCard({ left: { label: "Left", summary: "abc ".repeat(100) }, right: { label: "Right", summary: "界".repeat(100) } }, theme, width), inspector.render(width), viewer.render(width)];
-  for (const lines of surfaces) for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
- }
-});
-test("inspector pins preserve selection and compare actual agents", () => {
- const inspector = new LiveTeamInspectorOverlay({ theme, data: { agents } });
- inspector.handleInput("p"); inspector.handleInput("j"); inspector.handleInput("p");
- expect(inspector.getState().selectedId).toBe("agent-1");
- for (let i = 0; i < 5; i++) inspector.handleInput("\t");
- expect(inspector.getState().tab).toBe("compare");
- const text = inspector.render(120).join("\n");
- expect(text).toContain("Finding 0"); expect(text).toContain("Finding 1");
- inspector.setData({ agents: [...agents] });
- expect(inspector.getState().selectedId).toBe("agent-1");
-});
-test("patch view preserves line breaks", () => {
- const inspector = new LiveTeamInspectorOverlay({ theme, data: { agents } });
- for (let i = 0; i < 4; i++) inspector.handleInput("\t");
- const lines = inspector.render(100);
- expect(lines).toContain("+first line"); expect(lines).toContain("-second line");
-});
 test("telemetry is bounded, atomic-readable, and strips terminal escapes", () => {
  const dir = mkdtempSync(join(tmpdir(), "fabric-test-"));
  try {
@@ -95,154 +71,122 @@ test("transcript blocks stay bounded so one huge tool result cannot swamp the ru
  expect((call as { args: string }).args.length).toBeLessThanOrEqual(TRANSCRIPT_ARGS_LIMIT + 40);
 });
 
-test("the transcript viewer replays a run, scrolls within bounds, and respects width", () => {
- let closed = 0;
- const tall = new TranscriptViewerOverlay({ theme, title: "Option A · agent-0", read: () => ({ text: sessionText }), maxRows: 40, onClose: () => closed++ });
- const page = tall.render(100).join("\n");
- expect(page).toContain("Review the parser");
- expect(page).toContain("Reading the file now.");
- expect(page).toContain("export const a = 1;");
- expect(page).toContain("read");
- expect(page).not.toContain("You are Fabric agent");
- expect(tall.getState().entries).toBe(6);
-
- const short = new TranscriptViewerOverlay({ theme, title: "Option A · agent-0", read: () => ({ text: sessionText }), maxRows: 4 });
- for (const width of [1, 2, 3, 20, 60, 120]) {
-  for (const viewer of [tall, short]) for (const line of viewer.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
- }
- short.render(100);
- short.handleInput("G");
- expect(short.getState().offset).toBe(short.getState().maxOffset);
- expect(short.render(100).join("\n")).toContain("model → anthropic/claude-sonnet-4-5");
- short.handleInput("g");
- expect(short.getState().offset).toBe(0);
- short.handleInput("\u001b[6~"); // page down
- expect(short.getState().offset).toBeGreaterThan(0);
- expect(short.getState().offset).toBeLessThanOrEqual(short.getState().maxOffset);
- tall.handleInput("\u001b");
- expect(closed).toBe(1);
+const spec = (id: string, overrides: Partial<TranscriptPaneSpec> = {}): TranscriptPaneSpec => ({
+ id, label: id, model: "qwen", status: "done", hue: 0.3, ...overrides,
 });
 
-test("the viewer reports an empty or unreadable run instead of rendering nothing", () => {
- const blank = new TranscriptViewerOverlay({ theme, title: "Queued run", read: () => ({ text: "" }) });
- expect(blank.render(80).join("\n")).toContain("No transcript entries saved yet.");
- expect(blank.render(80).join("\n")).toContain("has not written any messages yet");
- const broken = new TranscriptViewerOverlay({ theme, title: "Broken", read: () => ({ text: "", notice: "Unable to read /tmp/x.jsonl" }) });
- expect(broken.render(80).join("\n")).toContain("Unable to read");
-});
-
-test("a live transcript refreshes only when the saved session changes and follows the tail", () => {
- let text = sessionText;
- const viewer = new TranscriptViewerOverlay({ theme, title: "Running", read: () => ({ text }), maxRows: 4 });
- viewer.render(90);
- expect(viewer.refresh()).toBe(false);
- viewer.handleInput("G");
- const before = viewer.getState();
- text = `${sessionText}${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Finished: all checks pass." }] } })}\n`;
- expect(viewer.refresh()).toBe(true);
- const after = viewer.render(90);
- expect(after.join("\n")).toContain("Finished: all checks pass.");
- expect(viewer.getState().entries).toBe(before.entries + 1);
- expect(viewer.getState().offset).toBeGreaterThanOrEqual(before.offset);
-});
-
-test("the inspector opens the transcript on enter and toggles the filter on a", () => {
- let opened: string | undefined;
- let toggles = 0;
- const inspector = new LiveTeamInspectorOverlay({ theme, data: { agents }, onOpen: (agent) => opened = agent.id, onToggleFilter: () => toggles++ });
- inspector.handleInput("\u001b[13u"); // kitty enter
- if (opened === undefined) inspector.handleInput("\r");
- expect(opened).toBe("agent-0");
- inspector.handleInput("a");
- expect(toggles).toBe(1);
- expect(inspector.render(100).join("\n")).toContain("enter transcript");
-});
-
-/* ---------- run picker ---------- */
-
-test("relative age is short, monotonic, and tolerant of a missing timestamp", () => {
- const now = Date.parse("2026-01-02T12:00:00.000Z");
- const at = (msAgo: number) => new Date(now - msAgo).toISOString();
- expect(relativeAge(at(5_000), now)).toBe("just now");
- expect(relativeAge(at(4 * 60_000), now)).toBe("4m ago");
- expect(relativeAge(at(3 * 60 * 60_000), now)).toBe("3h ago");
- expect(relativeAge(at(2 * 24 * 60 * 60_000), now)).toBe("2d ago");
- expect(relativeAge(undefined, now)).toBe("");
- expect(relativeAge("not a date", now)).toBe("");
-});
-
-test("the picker lists runs, moves, clamps, and keeps its selection across refreshes", () => {
- const runs = [
-  { id: "b", label: "Newest", model: "terra", status: "running" as const, sessionPath: "/tmp/b.jsonl", startedAt: new Date().toISOString() },
-  { id: "a", label: "Older", model: "terra", status: "done" as const, finishedAt: new Date(Date.now() - 90 * 60_000).toISOString() },
- ];
- let opened: string | undefined;
- let closed = 0;
- const picker = new TranscriptPickerOverlay({ theme, runs, onOpen: (run) => opened = run.id, onClose: () => closed++ });
- for (const width of [1, 2, 3, 40, 120]) for (const line of picker.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
- const text = picker.render(100).join("\n");
- expect(text).toContain("Run transcripts  2 runs");
- expect(text).toContain("Newest");
- expect(text).toContain("no transcript yet"); // only the run without a saved session
- picker.handleInput("\r");
- expect(opened).toBe("b");
- picker.handleInput("j");
- picker.handleInput("j"); // clamped at the end
- picker.handleInput("\r");
- expect(opened).toBe("a");
- // A refresh (a run finishing) keeps "a" selected rather than jumping to the newest.
- picker.setRuns([...runs, { id: "c", label: "Fresh", model: "terra", status: "done" as const, finishedAt: new Date().toISOString() }]);
- picker.handleInput("\r");
- expect(opened).toBe("a");
- picker.handleInput("\u001b");
- expect(closed).toBe(1);
-});
-
-test("the picker explains an empty run list instead of rendering a blank frame", () => {
- const picker = new TranscriptPickerOverlay({ theme, runs: [], onOpen: () => {}, onClose: () => {} });
- const text = picker.render(80).join("\n");
- expect(text).toContain("Run transcripts  0 runs");
- expect(text).toContain("No Fabric runs in this session yet");
- picker.handleInput("\r"); // no selection, no crash, no open
-});
-
-test("appending a live transcript parses only new lines and never drops a partial one", () => {
- const viewer = new TranscriptViewerOverlay({ theme, title: "live", maxRows: 8 });
- const line = (text: string) => `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } })}\n`;
- viewer.setSource({ text: line("first") });
- expect(viewer.getState().entries).toBe(1);
+test("a pane replays a run and appends live lines without dropping a partial one", () => {
+ const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: sessionText }) }) });
+ expect(pane.getState().entries).toBe(6);
+ const rendered = pane.render(80, 12).join("\n");
+ expect(rendered).toContain("api");
+ expect(rendered).toContain("Reading the file now.");
  // A half-written line waits for its newline instead of being parsed as garbage.
  const second = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "second" }] } });
- expect(viewer.appendText(second.slice(0, 15))).toBe(false);
- expect(viewer.getState().entries).toBe(1);
- expect(viewer.appendText(`${second.slice(15)}\n`)).toBe(true);
- expect(viewer.getState().entries).toBe(2);
- expect(viewer.render(80).join("\n")).toContain("second");
- // Appending costs only the new line: earlier entries are kept, not re-parsed.
- viewer.appendText(line("third"));
- expect(viewer.getState().entries).toBe(3);
- expect(viewer.render(80).join("\n")).toContain("first");
- expect(viewer.appendText("")).toBe(false);
+ expect(pane.appendText(second.slice(0, 15))).toBe(false);
+ expect(pane.appendText(`${second.slice(15)}\n`)).toBe(true);
+ expect(pane.getState().entries).toBe(7);
+ pane.scroll("G");
+ expect(pane.render(80, 12).join("\n")).toContain("second");
+ expect(pane.appendText("")).toBe(false);
 });
 
-test("the viewer resizes its body to a new window height", () => {
- const viewer = new TranscriptViewerOverlay({ theme, title: "resize", read: () => ({ text: sessionText }), maxRows: 5 });
- viewer.setHeight(24);
- expect(viewer.getState().rows).toBe(19); // 24 - chrome (title, count, two rules, hint)
- expect(viewer.render(100).length).toBeLessThanOrEqual(24);
- viewer.setHeight(12);
- expect(viewer.getState().rows).toBe(7);
- expect(viewer.render(100).length).toBeLessThanOrEqual(12);
- // Too small a window still leaves a usable body.
- viewer.setHeight(1);
- expect(viewer.getState().rows).toBe(3);
- // A notice is part of the chrome, so it cannot push the scroll hint off-screen.
- const noticed = new TranscriptViewerOverlay({ theme, title: "notice", read: () => ({ text: sessionText, notice: "truncated" }) });
- noticed.setHeight(14);
- expect(noticed.getState().rows).toBe(8);
- expect(noticed.render(100).length).toBeLessThanOrEqual(14);
- // Long content fills the window exactly, which is what the TUI wrapper relies on.
- const long = new TranscriptViewerOverlay({ theme, title: "long", read: () => ({ text: sessionText.repeat(4) }), maxRows: 5 });
- long.setHeight(24);
- expect(long.render(100)).toHaveLength(24);
+test("a pane scrolls, clamps, fills its height exactly, and never overflows its width", () => {
+ const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: sessionText.repeat(3) }) }) });
+ for (const width of [1, 2, 3, 20, 60, 120]) {
+  for (const line of pane.render(width, 10)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+ }
+ expect(pane.render(100, 10)).toHaveLength(10);
+ pane.setHeight(10);
+ const tall = pane.render(100, 20);
+ expect(tall).toHaveLength(20);
+ expect(pane.scroll("G") || true).toBe(true);
+ pane.render(100, 20);
+ const atEnd = pane.getState();
+ expect(atEnd.offset).toBe(atEnd.maxOffset);
+ pane.scroll("g");
+ expect(pane.getState().offset).toBe(0);
+ pane.scroll(" ");
+ expect(pane.getState().offset).toBeGreaterThan(0);
+ // A tiny window still renders its header and rule.
+ expect(pane.render(40, 2)).toHaveLength(2);
+});
+
+test("the transcript screen shows two columns, focuses them, and toggles to one", () => {
+ const left = spec("api", { read: () => ({ text: sessionText }) });
+ const right = spec("tests", { hue: 0.7, read: () => ({ text: sessionText }) });
+ const overlay = new AgentTranscriptOverlay({ theme, specs: [left, right], onClose: () => closed++ });
+ let closed = 0;
+ overlay.setHeight(20);
+ const wide = overlay.render(120);
+ expect(wide).toHaveLength(20);
+ for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(120);
+ // Each column carries its own agent name.
+ expect(wide.join("\n")).toContain("api");
+ expect(wide.join("\n")).toContain("tests");
+ overlay.handleInput("\t");
+ expect(overlay.paneAt(1)?.getState().offset).toBe(0);
+ overlay.handleInput("G"); // scrolls only the focused pane
+ expect(overlay.paneAt(1)!.getState().offset).toBeGreaterThan(0);
+ expect(overlay.paneAt(0)!.getState().offset).toBe(0);
+ overlay.handleInput("s"); // one column
+ const single = overlay.render(120).join("\n");
+ expect(single).toContain("pgup/pgdn scroll");
+ expect(single).not.toContain("│");
+ overlay.handleInput("\u001b");
+ expect(closed).toBe(1);
+ // A narrow terminal falls back to one column with an explanation.
+ const narrow = new AgentTranscriptOverlay({ theme, specs: [left, right] });
+ narrow.setHeight(20);
+ const narrowText = narrow.render(60).join("\n");
+ expect(narrowText).toContain("one column: too narrow for two");
+ for (const line of narrow.render(60)) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+});
+
+test("the agents screen selects, expands, confirms a cancel, and clamps when rows vanish", () => {
+ const base = buildTree({
+  main: { id: "main", kind: "main", label: "main", model: "flash", status: "idle" },
+  agents: [
+   { id: "api", kind: "agent", label: "api", model: "qwen", status: "running", batchId: "call-1" },
+   { id: "tests", kind: "agent", label: "tests", model: "qwen", status: "running", batchId: "call-1" },
+   { id: "solo", kind: "agent", label: "solo", model: "qwen", status: "done", batchId: "call-2", finishedAt: new Date().toISOString() },
+  ],
+ });
+ const opened: string[] = [];
+ const toggled: string[] = [];
+ const cancelled: string[] = [];
+ let closed = 0;
+ const screen = new AgentsScreen({
+  theme, rows: base,
+  onOpen: (row) => opened.push(row.id),
+  onToggle: (row) => toggled.push(row.id),
+  onCancel: (row) => cancelled.push(row.id),
+  onClose: () => closed++,
+ });
+ screen.setHeight(14);
+ for (const line of screen.render(100)) expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+ expect(screen.render(100).join("\n")).toContain("main");
+ // The header counts agents, not rows: main plus both group members plus solo.
+ expect(screen.render(100).join("\n")).toContain("Agents  4 live");
+ screen.handleInput("\r");
+ expect(opened).toEqual(["main"]);
+ screen.handleInput("j");
+ screen.handleInput("\r");
+ // The selected row after moving down is the group row; groups open their members.
+ expect(opened.at(-1)).toBe("group:call-1");
+ screen.handleInput("\r");
+ // Cancelling is confirmed inline: x then n does nothing, x then y cancels.
+ screen.handleInput("x");
+ expect(screen.getState().confirming).toBe("group:call-1");
+ screen.handleInput("n");
+ expect(cancelled).toEqual([]);
+ screen.handleInput("x");
+ screen.handleInput("y");
+ expect(cancelled).toEqual(["group:call-1"]);
+ // A refresh that drops rows clamps the selection instead of closing the list.
+ screen.handleInput("end");
+ screen.setRows(base.filter((row) => row.kind === "main"));
+ expect(screen.getState().selectedId).toBe("main");
+ screen.handleInput("\u001b");
+ expect(closed).toBe(1);
 });

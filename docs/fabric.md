@@ -41,14 +41,26 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
 
 ## UI and lifecycle
 
-- The live surface is the accent status line; finished agents stop counting five minutes after `finishedAt`.
-- Comparison cards grow during `await_agents`; detailed final packets remain available on disk.
-- `/team` opens a framed inspector. Pin two agents with `p`, then choose Compare. `Enter` replays the selected run's transcript; `a` (or `/team all`) includes finished runs that have already left the live list.
-- A transcript is a full-window custom screen (not an overlay): it owns the interactive area and leaves only Pi's footer, so the run reads like a normal session. It is reachable without `/team` through `/transcript [id|prefix|label]` or the `alt+t` shortcut, which list every run including pruned ones. `Esc` returns transcript → list → chat.
-- Result previews are bounded. An empty patch from a read-only worker is normal. Transcript blocks are bounded too, and the saved session file keeps the rest.
-- Pruning is display-only: `agent_status` still lists every run and notes how many are hidden from the live views.
-- `/team hide` / `/team show` toggle the status line only. `/team cancel <full-id>` requests cancellation of a subtree.
-- Reload restores a run reference saved in the active Pi session branch. Old pre-package sessions may lack that reference.
+- **Agent rows below the prompt** are the always-on surface. They appear the moment a child spawns
+  (main first, children indented, groups marked) and disappear when the main chat is alone. Each row
+  is one bounded line: status icon, the agent's color, name, model, current activity, elapsed time.
+- **`/agents`** is the only keyboard path to a transcript: a tree of main plus every live agent with
+  expand/collapse, group rows, `x` to cancel (inline `y/n`), and `Esc` back to the chat.
+- **Opening an agent takes the whole window** (a custom screen, not an overlay): a hue-tinted header,
+  a rule, and tinted message-header bands, then the replayed session. `Esc` steps back to `/agents`,
+  then to the chat. The main chat opens the same way from the live session file.
+- **Comparison groups** (one `spawn_agents` call) open as two columns; `s` toggles one/two, `tab`
+  switches focus, and each column keeps its own scroll position.
+- **Colors** are generated per agent from its id (theme-tuned for dark and light), so an agent keeps
+  its color across sessions and siblings stay distinguishable.
+- **Idle sweep:** an agent that is done, failed, or cancelled and stays idle for ten minutes leaves
+  the rows and `/agents`. Pruning is display-only: `state.json`, result cards, `agent_status`, and
+  every file on disk keep working.
+- Result previews and transcript blocks are bounded; the saved session file keeps the rest.
+- `/team` and `/transcript` no longer exist; their jobs are the rows, `/agents`, and the transcript
+  screen.
+- Reload restores a run reference saved in the active Pi session branch. Old pre-package sessions
+  may lack that reference.
 - Temporary run files must still exist to reconnect; they are not a durable archive.
 
 There is no automatic inter-agent debate or message mailbox. Use the parent to assign independent investigations, await their evidence, and synthesize the conclusion.
