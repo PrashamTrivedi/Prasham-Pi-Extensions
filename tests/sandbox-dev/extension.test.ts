@@ -2,11 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import sandboxDev from "../../extensions/sandbox-dev/index.ts";
+import sandboxDev, { jev } from "../../extensions/sandbox-dev/index.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-function harness(cwd: string, options: { hasUI: boolean; confirm?: boolean } = { hasUI: true }) {
+function harness(
+  cwd: string,
+  options: {
+    hasUI: boolean;
+    confirm?: boolean;
+    jevDecision?: (eventName: string, payload: any) => Promise<any>;
+    askJev?: (state: any, questions: any) => Promise<any>;
+  } = { hasUI: true },
+) {
   const hooks = new Map<string, Function>();
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
@@ -14,6 +22,7 @@ function harness(cwd: string, options: { hasUI: boolean; confirm?: boolean } = {
   const notifications: string[] = [];
   const sent: string[] = [];
   const messages: Array<{ customType: string; content: string }> = [];
+  const confirmCalls: string[] = [];
 
   const pi: any = {
     on: (name: string, handler: Function) => hooks.set(name, handler),
@@ -34,13 +43,29 @@ function harness(cwd: string, options: { hasUI: boolean; confirm?: boolean } = {
       input: async () => undefined,
       select: async () => undefined,
       editor: async () => undefined,
-      confirm: async () => options.confirm ?? false,
+      confirm: async (_title: string, message: string) => {
+        confirmCalls.push(message);
+        return options.confirm ?? false;
+      },
     },
-    sessionManager: { getBranch: () => [] },
+    sessionManager: { getBranch: () => [], getSessionId: () => "test-session" },
   };
 
+  // No subprocess, no network: stub the Jev bridge. The default fails closed (ask / uncertain)
+  // so tests that do not opt into a Jev verdict keep the deterministic human-path behavior.
+  jev.runJevDecision = options.jevDecision ?? (async () => ({ gate: { action: "ask", reason: "test: uncertain" } }));
+  jev.askJev = options.askJev ?? (async () => ({
+    answers: {
+      irreversible: { type: "noul", noul: 0.9 },
+      scope_risk: { type: "noul", noul: 0.9 },
+      safe_autoproceed: { type: "noul", noul: 0.1 },
+    },
+    model: "test",
+    inputTokens: 0,
+  }));
+
   sandboxDev(pi);
-  return { hooks, tools, commands, appended, notifications, sent, messages, ctx };
+  return { hooks, tools, commands, appended, notifications, sent, messages, confirmCalls, ctx };
 }
 
 function tempRepo(task: string): string {

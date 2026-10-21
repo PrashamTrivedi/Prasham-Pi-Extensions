@@ -41,4 +41,4 @@ Higher ranks may spawn equal or lower ranks. Aliases and full IDs are accepted. 
 
 A Git repository is required. Each worker starts from a recorded commit in its own temporary worktree. Patch capture uses a temporary Git index, so it includes tracked, deleted, binary, committed-after-launch, and untracked non-ignored files without staging or otherwise changing the worker's real index. Worktrees and outputs remain under the platform temporary directory in `pi-fabric/<root-id>/` for review.
 
-The extension preserves the compact widget, durable comparison cards, and framed `/team` overlay. Use `/team hide`, `/team show`, `/team status`, and `/team cancel <id>` as needed.
+The extension shows delegated agents as one-line rows below the prompt (colored per agent, main first, indented nesting, capped with `+N more`) and opens any of them — main included — as a full-window transcript from `/agents`, with comparison groups side by side and `s` to toggle columns. An agent idle for ten minutes leaves the UI, but its files and `agent_status` entry remain. The status line, `/team`, and `/transcript` are gone; spawn/await result cards are unchanged.

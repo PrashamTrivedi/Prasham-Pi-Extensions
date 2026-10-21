@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, renameSync, openSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, renameSync, openSync, closeSync, readSync } from "node:fs";
 import { clean, publishActivity, readActivity, readPreview } from "./activity.ts";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { LiveTeamInspectorOverlay, renderCompactFabricWidget, renderComparisonResultCard, type FabricAgentView, type FabricTheme, type ComparisonResult } from "./ui.ts";
+import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptPaneSpec, type TranscriptSource } from "./ui.ts";
+import { assignHues, buildTree, renderAgentRows, type AgentRow, type AgentSnapshot } from "./agents.ts";
 import { Type, type Static } from "typebox";
 
 type AgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
@@ -27,6 +28,12 @@ type FabricAgent = {
   startedAt?: string;
   finishedAt?: string;
   pid?: number;
+  /** Directory holding this run's saved session JSONL. */
+  sessionDir?: string;
+  /** Saved session file; the full-run viewer replays it. */
+  sessionPath?: string;
+  /** One id per spawn call, so sibling agents compare as a group. */
+  batchId?: string;
   resultPath?: string;
   patchPath?: string;
   baseCommit?: string;
@@ -37,6 +44,8 @@ export type FabricState = { rootId: string; repo: string; createdAt: string; con
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const LEGACY_CONFIG_PATH = join(dirname(ENTRY_PATH), "config.json");
 const ROOT_ENV = "PI_FABRIC_ROOT";
+/** Widget key for the agent rows below the prompt. */
+const AGENTS_WIDGET = "pi-fabric-agents";
 const AGENT_ENV = "PI_FABRIC_AGENT";
 const MODEL_ENV = "PI_FABRIC_MODEL";
 const DEFAULT_CONFIG: FabricConfig = { maxActiveAgents: 6, models: {} };
@@ -66,6 +75,70 @@ function fabricDir(rootId: string) { return join(tmpdir(), "pi-fabric", rootId);
 function statePath(rootId: string) { return join(fabricDir(rootId), "state.json"); }
 function lockPath(rootId: string) { return join(fabricDir(rootId), ".lock"); }
 function outputDir(rootId: string) { return join(fabricDir(rootId), "outputs"); }
+function sessionsDir(rootId: string) { return join(fabricDir(rootId), "sessions"); }
+
+/** An agent that stays idle this long leaves the rows and `/agents`. */
+export const IDLE_GONE_MS = 10 * 60_000;
+/** Upper bound for a replayed transcript; the saved file keeps everything. */
+export const TRANSCRIPT_LIMIT = 4_000_000;
+
+/**
+ * Pi names saved sessions `<timestamp>_<session-id>.jsonl`, so the file for a run
+ * is found by suffix rather than by a predictable name. Newest match wins.
+ */
+export function resolveSessionFile(dir: string, agentId: string): string | undefined {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(`_${agentId}.jsonl`))
+      .sort()
+      .map((name) => join(dir, name))
+      .at(-1);
+  } catch { return undefined; }
+}
+
+/** True when a terminal agent has been idle past the window; display-only. */
+export function isGone(agent: { status: AgentStatus; finishedAt?: string }, now = Date.now(), idleMs = IDLE_GONE_MS): boolean {
+  if (!terminal(agent.status) || !agent.finishedAt) return false;
+  const finished = Date.parse(agent.finishedAt);
+  return Number.isFinite(finished) && now - finished > idleMs;
+}
+
+/** Agents the live surfaces show: everything except ones that went idle. */
+export function liveAgents<T extends { status: AgentStatus; finishedAt?: string }>(agents: T[], now = Date.now(), idleMs = IDLE_GONE_MS): T[] {
+  return agents.filter((agent) => !isGone(agent, now, idleMs));
+}
+
+/**
+ * Reads session bytes written since `offset`, returning only whole lines. A
+ * trailing partial line is left for the next call, and cutting on a newline
+ * keeps a multi-byte character from being split while decoding.
+ */
+export function readSessionChunk(path: string, offset: number): { chunk: string; next: number } {
+  try {
+    const size = statSync(path).size;
+    if (size <= offset) return { chunk: "", next: offset };
+    const buffer = Buffer.alloc(size - offset);
+    const fd = openSync(path, "r");
+    let read: number;
+    try { read = readSync(fd, buffer, 0, buffer.length, offset); } finally { closeSync(fd); }
+    const text = buffer.subarray(0, read).toString("utf8");
+    const cut = text.lastIndexOf("\n");
+    if (cut < 0) return { chunk: "", next: offset };
+    const chunk = text.slice(0, cut + 1);
+    return { chunk, next: offset + Buffer.byteLength(chunk, "utf8") };
+  } catch { return { chunk: "", next: offset }; }
+}
+
+/** Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer. */
+export function readTranscript(path: string, limit = TRANSCRIPT_LIMIT): TranscriptSource {
+  try {
+    const text = readFileSync(path, "utf8");
+    if (text.length <= limit) return { text };
+    return { text: text.slice(0, limit), notice: `Transcript truncated to the first ${limit} characters; ${path} keeps the whole run.` };
+  } catch (error) {
+    return { text: "", notice: `Unable to read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
 
 export type ConfigResolution = { config: FabricConfig; path?: string; source: "env" | "user" | "legacy" | "default" };
 
@@ -172,8 +245,13 @@ function shell(command: string, args: string[], cwd?: string, env?: NodeJS.Proce
   return execFileSync(command, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-export function buildChildArgs(entryPath: string, model: string, instruction: string): string[] {
-  return ["-p", "--no-session", "--approve", "--no-extensions", "--extension", entryPath, "--model", model, "--", instruction];
+/**
+ * Children keep a real session so the parent can replay the whole run. Without a
+ * session directory the run stays ephemeral (`--no-session`).
+ */
+export function buildChildArgs(entryPath: string, model: string, instruction: string, session?: { dir: string; id: string }): string[] {
+  const persistence = session ? ["--session-dir", session.dir, "--session-id", session.id] : ["--no-session"];
+  return ["-p", ...persistence, "--approve", "--no-extensions", "--extension", entryPath, "--model", model, "--", instruction];
 }
 
 /** Capture every working-tree change relative to the launch commit without touching the worker's real index. */
@@ -208,12 +286,15 @@ function startQueued(rootId: string): void {
     const active = Object.values(state.agents).filter((agent) => agent.status === "running").length;
     const capacity = Math.max(0, state.config.maxActiveAgents - active);
     const selected = Object.values(state.agents).filter((agent) => agent.status === "queued").slice(0, capacity);
+    const sessionDir = sessionsDir(rootId);
+    if (selected.length) mkdirSync(sessionDir, { recursive: true });
     for (const agent of selected) {
       try {
         mkdirSync(join(fabricDir(rootId), "worktrees"), { recursive: true });
         const branch = `pi-fabric/${rootId.slice(0, 8)}/${agent.id.slice(0, 8)}`;
         agent.baseCommit = shell("git", ["rev-parse", "HEAD"], state.repo).trim();
         shell("git", ["worktree", "add", "-b", branch, agent.worktree, agent.baseCommit], state.repo);
+        agent.sessionDir = sessionDir;
         agent.status = "running";
         agent.startedAt = new Date().toISOString();
       } catch (error) {
@@ -236,7 +317,7 @@ function startQueued(rootId: string): void {
       "Finish with a concise result packet: findings, changes, tests run, risks, and recommendation.",
     ].join("\n");
     const stderr = openSync(join(outputDir(rootId), `${agent.id}.stderr.log`), "a");
-    const child = spawn(piBin, buildChildArgs(ENTRY_PATH, agent.model, instruction), {
+    const child = spawn(piBin, buildChildArgs(ENTRY_PATH, agent.model, instruction, agent.sessionDir ? { dir: agent.sessionDir, id: agent.id } : undefined), {
       cwd: agent.worktree,
       detached: true,
       stdio: ["ignore", "ignore", stderr],
@@ -261,7 +342,7 @@ function startQueued(rootId: string): void {
     withLock(rootId, () => {
       const state = loadState(rootId);
       const stored = state.agents[agent.id];
-      if (stored) { stored.pid = child.pid; saveState(rootId, state); }
+      if (stored) { stored.pid = child.pid; stored.sessionPath = stored.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agent.id); saveState(rootId, state); }
     });
   }
 }
@@ -269,8 +350,8 @@ function startQueued(rootId: string): void {
 function directChildren(state: FabricState, parentId?: string): FabricAgent[] {
   return Object.values(state.agents).filter((agent) => agent.parentId === parentId);
 }
-function treeLines(state: FabricState, parentId: string | undefined, theme?: { fg: (color: "success" | "error" | "warning" | "accent" | "muted" | "dim", text: string) => string }, indent = ""): string[] {
-  const children = directChildren(state, parentId);
+function treeLines(state: FabricState, parentId: string | undefined, theme?: { fg: (color: "success" | "error" | "warning" | "accent" | "muted" | "dim", text: string) => string }, indent = "", include: (agent: FabricAgent) => boolean = () => true): string[] {
+  const children = directChildren(state, parentId).filter(include);
   const lines: string[] = [];
   for (const [index, agent] of children.entries()) {
     const last = index === children.length - 1;
@@ -278,7 +359,7 @@ function treeLines(state: FabricState, parentId: string | undefined, theme?: { f
     const color = agent.status === "done" ? "success" : agent.status === "error" || agent.status === "cancelled" ? "error" : agent.status === "running" ? "accent" : "warning";
     const line = `${indent}${last ? "└─" : "├─"} ${icon} ${agent.label} ${short(agent.id)}  ${agent.model}  ${agent.status}`;
     lines.push(theme ? theme.fg(color, line) : line);
-    lines.push(...treeLines(state, agent.id, theme, `${indent}${last ? "   " : "│  "}`));
+    lines.push(...treeLines(state, agent.id, theme, `${indent}${last ? "   " : "│  "}`, include));
   }
   return lines;
 }
@@ -292,14 +373,37 @@ function resultText(agent: FabricAgent): string {
   return readFileSync(agent.resultPath, "utf8");
 }
 
+/**
+ * Rows a full-window custom screen may draw. Pi keeps its own footer below the
+ * screen: cwd/branch, context+model, and one status row (every extension status
+ * shares that row). Filling the whole terminal scrolls the first rows out of view.
+ */
+const PI_FOOTER_ROWS = 3;
+function windowHeight(rows: number): number { return Math.max(8, rows - PI_FOOTER_ROWS); }
+/** Pads or trims a screen to exactly the window height, so nothing scrolls off. */
+function fitScreen(lines: readonly string[], height: number, width: number): string[] {
+  const sized = lines.length >= height ? lines.slice(0, height) : [...lines, ...Array<string>(height - lines.length).fill("")];
+  return sized.map((line) => truncateToWidth(line, width));
+}
+
 export default function piFabric(pi: ExtensionAPI) {
   // Resolve once per process. An explicitly selected, unreadable, or malformed config is fatal instead of silently changing policy.
   const configResolution = resolveConfig();
   if (configResolution.source === "env" && configResolution.path) process.env.PI_FABRIC_CONFIG = configResolution.path;
   let rootId = process.env[ROOT_ENV] ?? "";
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  let widgetVisible = true;
   const recorded = new Set<string>();
+  // The coordinator chat is an agent too: rows and `/agents` show it beside its children.
+  const sessionStartedAt = new Date().toISOString();
+  let mainBusy = false;
+  let mainActivity = "";
+  let runningActivity = "";
+  /** Agent ids whose descendants are hidden in `/agents`. */
+  const collapsed = new Set<string>();
+  /** Group ids whose members are listed; spawn batches stay one row until expanded. */
+  const expandedGroups = new Set<string>();
+  /** Depth of open full-window screens; while any is open the rows release their space. */
+  let screenDepth = 0;
 
   function views(agents: FabricAgent[], includePatch = false): FabricAgentView[] {
     return agents.map(agent => {
@@ -327,12 +431,197 @@ export default function piFabric(pi: ExtensionAPI) {
       const lines: string[] = [];
       for (let i = 0; i < visible.length; i += 2) {
         lines.push(...renderComparisonResultCard({ title: i === 0 ? title : undefined,
-          left: card(visible[i]!), right: visible[i + 1] ? card(visible[i + 1]!) : { label: "Evidence", summary: "Review reported findings and saved patches before integration. /team opens the live inspector." },
+          left: card(visible[i]!), right: visible[i + 1] ? card(visible[i + 1]!) : { label: "Evidence", summary: "Review reported findings and saved patches before integration. `/agents` opens any run." },
           maxBodyLines: expanded ? 12 : 6 }, theme, width));
       }
-      if (agents.length > visible.length) lines.push(truncateToWidth(`+ ${agents.length - visible.length} more · expand tool output or open /team`, width));
+      if (agents.length > visible.length) lines.push(truncateToWidth(`+ ${agents.length - visible.length} more · expand the tool output or open /agents`, width));
       return lines;
     } };
+  }
+
+  /** Session files by agent id, read once per call instead of once per agent. */
+  function sessionIndex(): Map<string, string> {
+    const index = new Map<string, string>();
+    if (!rootId) return index;
+    try {
+      for (const name of readdirSync(sessionsDir(rootId))) {
+        const match = name.match(/_([0-9a-f-]{36})\.jsonl$/i);
+        if (match) index.set(match[1]!, join(sessionsDir(rootId), name));
+      }
+    } catch { /* No sessions yet. */ }
+    return index;
+  }
+
+  /** The coordinator chat as an agent row: busy, model, last tool, session age. */
+  function mainSnapshot(ctx: ExtensionContext): AgentSnapshot {
+    return {
+      id: "main",
+      kind: "main",
+      label: "main",
+      model: currentModel(ctx).split("/").pop() ?? "main",
+      status: mainBusy ? "running" : "idle",
+      activity: mainBusy ? (mainActivity || "working") : "idle",
+      startedAt: sessionStartedAt,
+      sessionPath: ctx.sessionManager.getSessionFile?.(),
+    };
+  }
+
+  /** Live delegated agents as rows, with the last thing each one did. */
+  function agentSnapshots(state: FabricState, sessions: Map<string, string>): AgentSnapshot[] {
+    return liveAgents(Object.values(state.agents)).map((agent) => ({
+      id: agent.id,
+      kind: "agent" as const,
+      label: clean(agent.label, 80),
+      model: agent.model.split("/").pop() ?? agent.model,
+      status: agent.status,
+      activity: readActivity(fabricDir(rootId), agent.id).items.at(-1)?.text.split("\n")[0],
+      startedAt: agent.startedAt,
+      finishedAt: agent.finishedAt,
+      parentId: agent.parentId,
+      batchId: agent.batchId,
+      sessionPath: agent.sessionPath ?? sessions.get(agent.id),
+    }));
+  }
+
+  /** The rows below the prompt and the `/agents` list share this tree. */
+  function treeRows(ctx: ExtensionContext): AgentRow[] {
+    if (!rootId || !existsSync(statePath(rootId))) return [];
+    let state: FabricState;
+    try { state = loadState(rootId); } catch { return []; }
+    return buildTree({ agents: agentSnapshots(state, sessionIndex()), main: mainSnapshot(ctx), collapsed, expandedGroups, now: Date.now() });
+  }
+
+  /** Resolves one surface agent (main, a child, or a group row) into transcript panes. */
+  function paneSpec(ctx: ExtensionContext, id: string): TranscriptPaneSpec | undefined {
+    if (id === "main") {
+      const main = mainSnapshot(ctx);
+      return { id: "main", label: "main", model: main.model, status: main.status, hue: 0, main: true, read: undefined };
+    }
+    if (!rootId || !existsSync(statePath(rootId))) return undefined;
+    let agent: FabricAgent | undefined;
+    try { agent = loadState(rootId).agents[id]; } catch { return undefined; }
+    if (!agent) return undefined;
+    const path = agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), id);
+    const rows = treeRows(ctx);
+    const hue = rows.find((row) => row.id === id)?.hue ?? 0;
+    return { id, label: clean(agent.label, 80), model: agent.model.split("/").pop() ?? agent.model, status: agent.status, hue, path };
+  }
+
+  /**
+   * Opens one or two agents as a full-window transcript screen. Live runs are
+   * followed by reading only appended bytes; main follows the session file.
+   */
+  async function showTranscript(ctx: ExtensionContext, ids: readonly string[]): Promise<void> {
+    const wanted = [...new Set(ids)].slice(0, 2);
+    const specs: TranscriptPaneSpec[] = [];
+    const sources: Array<{ id: string; path: string; cursor: number; done: boolean }> = [];
+    for (const id of wanted) {
+      const spec = paneSpec(ctx, id);
+      const path = spec ? (spec.id === "main" ? ctx.sessionManager.getSessionFile?.() : spec.path) : undefined;
+      if (!spec || !path || !existsSync(path)) continue;
+      const initial = readTranscript(path);
+      specs.push({ ...spec, read: () => initial });
+      sources.push({ id, path, cursor: Buffer.byteLength(initial.text.slice(0, initial.text.lastIndexOf("\n") + 1), "utf8"), done: Boolean(initial.notice) });
+    }
+    if (!specs.length) {
+      const mainOnly = wanted.length === 1 && wanted[0] === "main";
+      ctx.ui.notify(mainOnly ? "The main chat has no saved session in this run." : "That run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
+      return;
+    }
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(`Transcripts need the interactive UI. Saved session: ${sources[0]!.path}`, "info");
+      return;
+    }
+    const hidden = wanted.length - specs.length;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      await withScreen(ctx, () => ctx.ui.custom((tui, theme, _keys, done) => {
+        const overlay = new AgentTranscriptOverlay({ theme, specs, onClose: () => done(undefined) });
+        timer = setInterval(() => {
+          try {
+            for (const source of sources) {
+              if (source.done) continue;
+              const read = readSessionChunk(source.path, source.cursor);
+              if (!read.chunk) continue;
+              source.cursor = read.next;
+              if (overlay.appendText(source.id, read.chunk)) tui.requestRender();
+            }
+          } catch { /* Keep the last transcript that rendered. */ }
+        }, 1000);
+        return {
+          invalidate: () => overlay.invalidate(),
+          handleInput: (input: string) => overlay.handleInput(input),
+          render: (width: number) => {
+            const height = windowHeight(tui.terminal.rows);
+            overlay.setHeight(height);
+            return fitScreen(overlay.render(width), height, width);
+          },
+        };
+      }));
+    } finally { if (timer) clearInterval(timer); }
+    if (hidden > 0) ctx.ui.notify(`${hidden} more agent(s) in this group; open them from /agents.`, "info");
+  }
+
+  /** `/agents`: the only keyboard path to a transcript. Esc from a run returns here. */
+  async function showAgents(ctx: ExtensionContext): Promise<void> {
+    if (ctx.mode !== "tui") {
+      const rows = treeRows(ctx);
+      ctx.ui.notify(rows.length ? rows.map((row) => `${"  ".repeat(row.depth)}${row.kind === "main" ? "◆" : "›"} ${row.label} · ${row.status}`).join("\n") : "No live agents.", "info");
+      return;
+    }
+    while (true) {
+      let chosen: AgentRow | undefined;
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        chosen = await withScreen(ctx, () => ctx.ui.custom<AgentRow | undefined>((tui, theme, _keys, done) => {
+          const screen: AgentsScreen = new AgentsScreen({
+            theme,
+            rows: treeRows(ctx),
+            onOpen: (row) => done(row),
+            onToggle: (row) => {
+              const set = row.kind === "group" ? expandedGroups : collapsed;
+              if (set.has(row.id)) set.delete(row.id); else set.add(row.id);
+              screen.setRows(treeRows(ctx));
+              tui.requestRender();
+            },
+            onCancel: (row) => {
+              // A group row cancels every member of its spawn batch.
+              const ids = row.kind === "group" ? (row.members ?? []) : [row.id];
+              for (const id of ids) { try { cancelTree(rootId, id); } catch { /* Already gone. */ } }
+              updateAgents(ctx);
+              screen.setRows(treeRows(ctx));
+              tui.requestRender();
+            },
+            onClose: () => done(undefined),
+          });
+          timer = setInterval(() => { try { screen.setRows(treeRows(ctx)); tui.requestRender(); } catch { /* Keep the last list. */ } }, 750);
+          return {
+            invalidate: () => screen.invalidate(),
+            handleInput: (input: string) => screen.handleInput(input),
+            render: (width: number) => {
+              const height = windowHeight(tui.terminal.rows);
+              screen.setHeight(height);
+              return fitScreen(screen.render(width), height, width);
+            },
+          };
+        }));
+      } finally { if (timer) clearInterval(timer); }
+      if (!chosen) return;
+      await showTranscript(ctx, chosen.kind === "group" ? (chosen.members ?? []) : [chosen.id]);
+    }
+  }
+
+  /**
+   * Runs a full-window screen with the rows widget hidden. Pi lays widgets out
+   * beside the interactive area, so leaving them up would clip the screen's top.
+   */
+  async function withScreen<T>(ctx: ExtensionContext, run: () => Promise<T>): Promise<T> {
+    screenDepth += 1;
+    ctx.ui.setWidget(AGENTS_WIDGET, undefined);
+    try { return await run(); } finally {
+      screenDepth -= 1;
+      if (screenDepth === 0) updateAgents(ctx);
+    }
   }
   function ensureRoot(ctx: ExtensionContext): string {
     // Drop a restore whose state was cleaned up, then re-apply the resolved policy
@@ -353,17 +642,24 @@ export default function piFabric(pi: ExtensionAPI) {
   }
   function startRefresh(ctx: ExtensionContext) {
     if (refreshTimer || activeAgentId() || ctx.mode !== "tui") return;
-    refreshTimer = setInterval(() => { try { updateUI(ctx); } catch { /* Retry next tick; never interrupt editing. */ } }, 750);
+    refreshTimer = setInterval(() => { try { updateAgents(ctx); } catch { /* Retry next tick; never interrupt editing. */ } }, 750);
   }
-  function updateUI(ctx: ExtensionContext): void {
-    if (ctx.mode !== "tui" || activeAgentId()) return;
-    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setWidget("pi-fabric", undefined); ctx.ui.setStatus("pi-fabric", undefined); return; }
+  function updateAgents(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui" || activeAgentId() || screenDepth > 0) return;
+    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setWidget(AGENTS_WIDGET, undefined); return; }
     const state = loadState(rootId);
     const agents = Object.values(state.agents);
-    ctx.ui.setStatus("pi-fabric", ctx.ui.theme.fg("accent", `◆ fabric ${summary(state).split(" · ")[0]}`));
-    const data = views(agents).sort((a, b) => Number(terminal(a.status)) - Number(terminal(b.status)));
-    if (widgetVisible && agents.length) ctx.ui.setWidget("pi-fabric", (_tui, theme) => ({ invalidate() {}, render: (width) => renderCompactFabricWidget({ agents: data, maxAgents: 4 }, theme, width) }), { placement: "aboveEditor" });
-    else ctx.ui.setWidget("pi-fabric", undefined);
+    const live = liveAgents(agents);
+    // The rows are the only always-on surface: they appear with the first child and
+    // disappear again when the main chat is alone.
+    if (!live.length) {
+      ctx.ui.setWidget(AGENTS_WIDGET, undefined);
+    } else {
+      // The compact rows keep every batch on one line; expanding is a `/agents` affordance.
+      const rows = buildTree({ agents: agentSnapshots(state, sessionIndex()), main: mainSnapshot(ctx), now: Date.now() });
+      ctx.ui.setWidget(AGENTS_WIDGET, (_tui, theme) => ({ invalidate() { /* rows are rebuilt per tick */ }, render: (width) => renderAgentRows(rows, theme, width) }), { placement: "belowEditor" });
+    }
+    // Result entries are recorded for every run, including ones already gone from the rows.
     for (const agent of agents) {
       if (!terminal(agent.status) || recorded.has(agent.id)) continue;
       recorded.add(agent.id);
@@ -372,6 +668,20 @@ export default function piFabric(pi: ExtensionAPI) {
   }
   pi.registerEntryRenderer<{ agents: FabricAgentView[] }>("pi-fabric-result", (entry, options, theme) => comparison(entry.data?.agents ?? [], theme, options.expanded, "◆ FABRIC · Saved result"));
   function activeAgentId(): string | undefined { return process.env[AGENT_ENV]; }
+  /** Records the child's own session file (authoritative, available before it finishes). */
+  function rememberSessionPath(root: string, agentId: string, sessionPath?: string): void {
+    if (!sessionPath) return;
+    try {
+      withLock(root, () => {
+        const state = loadState(root);
+        const agent = state.agents[agentId];
+        if (!agent || agent.sessionPath === sessionPath) return;
+        agent.sessionPath = sessionPath;
+        agent.sessionDir = dirname(sessionPath);
+        saveState(root, state);
+      });
+    } catch { /* Best effort: a missing root or a busy lock only delays the transcript link; the run is unaffected. */ }
+  }
   function cancelTree(root: string, agentId: string): string[] {
     const cancelled = withLock(root, () => {
       const state = loadState(root); const rootAgent = state.agents[agentId];
@@ -398,8 +708,11 @@ export default function piFabric(pi: ExtensionAPI) {
       if (entry.customType === "pi-fabric-root" && !activeAgentId() && data?.rootId && existsSync(statePath(data.rootId))) rootId = data.rootId;
       if (entry.customType === "pi-fabric-result" && data?.agentId) recorded.add(data.agentId);
     }
+    // A child records its own saved session immediately, so the parent can replay a run that is still working.
+    const childId = activeAgentId();
+    if (rootId && childId) rememberSessionPath(rootId, childId, ctx.sessionManager.getSessionFile?.());
     if (!rootId) return;
-    updateUI(ctx); startRefresh(ctx);
+    updateAgents(ctx); startRefresh(ctx);
   });
   pi.on("session_shutdown", () => { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = undefined; });
 
@@ -407,9 +720,13 @@ export default function piFabric(pi: ExtensionAPI) {
     const id = activeAgentId();
     if (rootId && id) publishActivity(fabricDir(rootId), id, kind, text);
   }
-  pi.on("agent_start", () => activity("activity", "Working on assigned task"));
+  pi.on("agent_start", () => {
+    if (!activeAgentId()) { mainBusy = true; mainActivity = "thinking"; }
+    activity("activity", "Working on assigned task");
+  });
   pi.on("tool_execution_start", (event) => {
     // Only display a safe label, not arbitrary tool arguments or secrets.
+    if (!activeAgentId()) { mainBusy = true; runningActivity = `running ${event.toolName}`; mainActivity = runningActivity; }
     activity("activity", `Running ${event.toolName}`);
   });
   pi.on("tool_execution_end", (event) => {
@@ -419,6 +736,7 @@ export default function piFabric(pi: ExtensionAPI) {
   });
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") return;
+    if (!activeAgentId()) mainActivity = "replying";
     const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     if (text.trim()) activity("finding", text);
   });
@@ -444,6 +762,9 @@ export default function piFabric(pi: ExtensionAPI) {
       const lastAssistant = [...messages].reverse().find((entry) => entry.message?.role === "assistant")?.message;
       const response = lastAssistant?.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "(Agent settled without a text response.)";
       mkdirSync(outputDir(rootId), { recursive: true });
+      // Settling is the last chance for a child to link its saved transcript.
+      agent.sessionPath = ctx.sessionManager.getSessionFile?.() ?? agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agentId);
+      if (agent.sessionPath) agent.sessionDir = dirname(agent.sessionPath);
       agent.resultPath = join(outputDir(rootId), `${agentId}.md`);
       agent.patchPath = join(outputDir(rootId), `${agentId}.patch`);
       writeFileSync(agent.resultPath, response);
@@ -470,6 +791,8 @@ export default function piFabric(pi: ExtensionAPI) {
         const caller = effectiveRule(state.config, callerModel);
         if (!caller) throw new Error("Pi Fabric cannot determine the current model; run spawn_agents from a session with an active model.");
         const parentId = activeAgentId();
+        // One batch id per call, so the UI can offer these siblings side by side.
+        const batchId = randomUUID();
         const agents: FabricAgent[] = [];
         for (const request of params.agents) {
           const child = requestedRule(state.config, callerModel, request.model);
@@ -478,7 +801,7 @@ export default function piFabric(pi: ExtensionAPI) {
           const id = randomUUID();
           const label = request.label?.trim() || request.task.replace(/\s+/g, " ").slice(0, 42);
           const worktree = join(fabricDir(root), "worktrees", `${child[0]}-${id.slice(0, 8)}`);
-          const agent: FabricAgent = { id, parentId, model: child[1].id, task: request.task, label, status: "queued", cwd: ctx.cwd, worktree, createdAt: new Date().toISOString() };
+          const agent: FabricAgent = { id, parentId, batchId, model: child[1].id, task: request.task, label, status: "queued", cwd: ctx.cwd, worktree, createdAt: new Date().toISOString() };
           state.agents[id] = agent;
           agents.push(agent);
         }
@@ -486,7 +809,7 @@ export default function piFabric(pi: ExtensionAPI) {
         return agents;
       });
       startQueued(root);
-      updateUI(ctx);
+      updateAgents(ctx);
       return { content: [{ type: "text", text: `Queued ${created.length} Fabric agent(s): ${created.map((agent) => `${agent.label} [${short(agent.id)}]`).join(", ")}. Use await_agents when their evidence is needed.` }], details: { rootId: root, agents: created } };
     },
     renderCall(args, theme) { return new Text(theme.fg("accent", `◆ fabric spawn  ${args.agents.length} agent${args.agents.length === 1 ? "" : "s"}`), 0, 0); },
@@ -509,7 +832,7 @@ export default function piFabric(pi: ExtensionAPI) {
         if (selected.every((agent) => terminal(agent.status))) {
           if (parentId) withLock(root, () => { const next = loadState(root); if (next.agents[parentId]?.status === "waiting") { next.agents[parentId].status = "running"; saveState(root, next); } });
           const packets = selected.map((agent) => `## ${agent.label} [${short(agent.id)}] — ${agent.status}\nResult: ${agent.resultPath ?? "none"}\nPatch: ${agent.patchPath ?? "none"}\n\n${resultText(agent)}`).join("\n\n---\n\n");
-          updateUI(ctx);
+          updateAgents(ctx);
           return { content: [{ type: "text", text: packets }], details: { rootId: root, agents: selected, ui: views(selected) } };
         }
         await new Promise((resolve) => setTimeout(resolve, 750));
@@ -529,7 +852,10 @@ export default function piFabric(pi: ExtensionAPI) {
       const root = ensureRoot(ctx); const state = loadState(root);
       const selected = params.agentIds ? params.agentIds.map((id) => state.agents[id]).filter((agent): agent is FabricAgent => Boolean(agent)) : Object.values(state.agents);
       const body = params.includeResults ? selected.map((agent) => `## ${agent.label} — ${agent.status}\n${resultText(agent)}`).join("\n\n") : [summary(state), ...treeLines(state, undefined)].join("\n");
-      return { content: [{ type: "text", text: body || "Fabric has no delegated agents yet." }], details: { rootId: root, agents: selected } };
+      // The idle sweep only hides agents from the UI; forensics stay complete here.
+      const gone = Object.values(state.agents).filter((agent) => isGone(agent)).length;
+      const note = gone ? `\n\n${gone} agent(s) are gone from the rows and /agents (idle more than ${IDLE_GONE_MS / 60_000} minutes). They stay listed here and their transcripts stay on disk.` : "";
+      return { content: [{ type: "text", text: (body || "Fabric has no delegated agents yet.") + note }], details: { rootId: root, agents: selected } };
     },
   });
 
@@ -537,54 +863,19 @@ export default function piFabric(pi: ExtensionAPI) {
     name: "cancel_agents", label: "Cancel Agents", description: "Cancel a Pi Fabric agent and its complete descendant tree. Worktrees and patches are preserved for inspection.", parameters: CancelParams,
     async execute(_id, params, _signal, _update, ctx) {
       const root = ensureRoot(ctx); const cancelled = cancelTree(root, params.agentId);
-      updateUI(ctx);
+      updateAgents(ctx);
       return { content: [{ type: "text", text: `Cancelled ${cancelled.length} Fabric agent(s). Their worktrees remain available for inspection.` }], details: { agentIds: cancelled } };
     },
   });
 
-  pi.registerCommand("team", {
-    description: "Show the Pi Fabric recursive agent team dashboard",
-    handler: async (args, ctx) => {
-      const root = ensureRoot(ctx);
-      if (args.trim() === "hide" || args.trim() === "show") {
-        widgetVisible = args.trim() === "show"; updateUI(ctx); return;
-      }
-      if (args.trim() === "status") { updateUI(ctx); ctx.ui.notify(summary(loadState(root)), "info"); return; }
-      if (!args.trim()) {
-        const state = loadState(root); updateUI(ctx);
-        if (ctx.mode !== "tui") { ctx.ui.notify([summary(state), ...treeLines(state, undefined)].join("\n"), "info"); return; }
-        let timer: ReturnType<typeof setInterval> | undefined;
-        try {
-          await ctx.ui.custom((tui, theme, _keys, done) => {
-            const data = () => ({ agents: views(Object.values(loadState(root).agents), true), maxRows: Math.max(3, Math.floor(tui.terminal.rows * 0.8) - 10) });
-            const inspector = new LiveTeamInspectorOverlay({ theme, data: data(), onChange: () => tui.requestRender(), onClose: () => done(undefined) });
-            timer = setInterval(() => { try { inspector.setData(data()); } catch { /* Keep last valid snapshot. */ } }, 750);
-            return {
-              invalidate: () => inspector.invalidate(),
-              handleInput: (input: string) => inspector.handleInput(input),
-              render: (width: number) => {
-                const inner = Math.max(1, width - 4);
-                const border = theme.fg("borderAccent", "─".repeat(Math.max(0, width - 2)));
-                const frame = (line: string) => {
-                  const clipped = truncateToWidth(line, inner);
-                  return truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "│") + " " + clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))) + " " + theme.fg("borderAccent", "│")), width);
-                };
-                return [
-                  truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "┌") + border + theme.fg("borderAccent", "┐")), width),
-                  frame(""),
-                  ...inspector.render(inner).map(frame),
-                  frame(""),
-                  truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "└") + border + theme.fg("borderAccent", "┘")), width),
-                ];
-              },
-            };
-          }, { overlay: true, overlayOptions: { width: "95%", maxHeight: "90%" } });
-        } finally { if (timer) clearInterval(timer); }
+  pi.registerCommand("agents", {
+    description: "List the main agent and every delegated run; open one as a full-window transcript",
+    handler: async (_args, ctx) => {
+      if (!rootId || !existsSync(statePath(rootId))) {
+        ctx.ui.notify("Pi Fabric has no agents in this session yet.", "info");
         return;
       }
-      const match = args.trim().match(/^cancel\s+(.+)$/);
-      if (match) { const cancelled = cancelTree(root, match[1]); updateUI(ctx); ctx.ui.notify(`Cancelled ${cancelled.length} Fabric agent(s).`, "info"); return; }
-      ctx.ui.notify("Usage: /team | /team status | /team hide | /team show | /team cancel <agent-id>", "info");
+      await showAgents(ctx);
     },
   });
 }

@@ -155,6 +155,11 @@ export function classifyToolCall(call: PolicyCall, cwd: string, config: PolicyCo
   return { verdict: "allow", reason: "tool not covered by policy", flags: [] };
 }
 
+/** True when a confirmation-tier call is a shell command, and therefore Jev-resolvable. */
+export function isShellConfirm(call: PolicyCall): boolean {
+  return SHELL_TOOLS.has(call.toolName);
+}
+
 /**
  * True when a tool call actually starts implementation: a source write/edit, or an implementation
  * command. Planning writes under `taskNotes/` do not count. Used to arm outcome supervision once

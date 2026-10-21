@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { composeDuckAnswers, toQuestionnaireQuestions } from "../../extensions/duck/answers.ts";
 import { parseDuckQuestions } from "../../extensions/duck/questions.ts";
 
 const question = (overrides: Record<string, unknown> = {}) => ({
@@ -55,26 +54,5 @@ describe("parseDuckQuestions", () => {
     expect(parseDuckQuestions("no json here")).toEqual({ questions: [], ok: false });
     expect(parseDuckQuestions("[]")).toEqual({ questions: [], ok: false });
     expect(parseDuckQuestions("[{header:'x'}]")).toEqual({ questions: [], ok: false });
-  });
-});
-
-describe("answers", () => {
-  test("maps questions to questionnaire tabs and composes the block", () => {
-    const questions = parseDuckQuestions(JSON.stringify([question({ header: "Scope" })])).questions;
-    const tabs = toQuestionnaireQuestions(questions);
-    expect(tabs[0]).toMatchObject({ id: "q1", label: "Scope", prompt: "How wide is this?" });
-
-    const block = composeDuckAnswers(questions, [
-      { id: "q1", value: "Wide", label: "Wide", wasCustom: false, index: 2 },
-    ]);
-    expect(block).toContain("**Duck answers**");
-    expect(block).toContain("- **Scope**: Wide");
-  });
-
-  test("marks a typed answer and skips unanswered questions", () => {
-    const questions = parseDuckQuestions(JSON.stringify([question(), question({ header: "Second" })])).questions;
-    const block = composeDuckAnswers(questions, [{ id: "q1", value: "custom", label: "custom", wasCustom: true }]);
-    expect(block).toContain("- **Scope**: (wrote) custom");
-    expect(block).not.toContain("Second");
   });
 });

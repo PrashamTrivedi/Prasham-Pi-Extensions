@@ -4,7 +4,7 @@
 
 A Git-installable collection of [Pi](https://github.com/earendil-works/pi-mono) extensions by [Prasham Trivedi](https://github.com/PrashamTrivedi). Fabric is the flagship: recursive agent teams with isolated Git worktrees and three live terminal views.
 
-![Illustrative preview of Fabric's live widget, comparison cards, and framed inspector](docs/preview.svg)
+![Illustrative preview of Fabric's status line, comparison cards, and framed inspector](docs/preview.svg)
 
 > The preview uses simulated, non-sensitive data. It is an illustration of the UI, not a recording of an agent run. Open [the interactive preview](https://PrashamTrivedi.github.io/Prasham-Pi-Extensions/preview.html), or run it locally with `npm run preview`.
 
@@ -41,7 +41,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 
 | Extension | What it does | Controls |
 | --- | --- | --- |
-| **Fabric** | Recursive agent teams, worktree isolation, live activity, comparisons, and inspection | `/team`, four agent tools |
+| **Fabric** | Recursive agent teams, worktree isolation, live agent rows, comparisons, and per-agent transcripts | `/agents`, four agent tools |
 | **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
 | **Workbench** | Pet indicator, two-line footer, and a cockpit docked above the editor with context, provider usage, and recent decisions | `/cockpit`, `workbench.config.json` |
 | **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
@@ -65,27 +65,57 @@ Ask Pi naturally:
 
 The model decides whether delegation is useful. Fabric supplies the execution tools, not a mandatory workflow.
 
-### 1. Compact live widget
+### 1. Agent rows below the prompt
 
-A small panel above the editor prioritizes unfinished work and shows each agent's latest activity. It refreshes without taking keyboard focus. Hide it with `/team hide`; bring it back with `/team show`. Hiding the panel does not stop workers.
+As soon as a delegated agent spawns, it appears in a stack of rows under the prompt — one line per
+agent, never covering the transcript, never taking keyboard focus:
+
+```
+◆ main · deepseek-v4.1-flash · thinking · 12m
+├─ ● api-refactor · qwen · running npm test · 2m
+└─ ○ tests · qwen · queued · —
+```
+
+Each row shows a status icon, the agent's own color, its name, model, what it is doing right now,
+and how long it has been running. The main chat is the first row; agents spawned by an agent are
+indented under it. The stack caps at six rows (then `+N more`) and disappears entirely when the main
+chat is alone. Colors are generated per agent, so the same agent is the same color every time.
+
+An agent that stays idle for more than ten minutes leaves the rows and `/agents`. That is display
+only: its transcript, result, and patch stay on disk, and `agent_status` still reports it.
 
 ### 2. Comparison cards in the conversation
 
-While `await_agents` runs, cards update with reported findings. Wide terminals show two cards side by side; narrow terminals stack them. Expand the tool output for additional agents and detail. Finished workers also produce persistent transcript cards without adding UI telemetry to the parent model's context.
+While `await_agents` runs, cards update with reported findings. Wide terminals show two cards side
+by side; narrow terminals stack them. Expand the tool output for additional agents and detail.
+Finished workers also produce persistent result cards without adding UI telemetry to the parent
+model's context.
 
-### 3. Framed team inspector
+### 3. `/agents` — the way in
 
-Open `/team` for an accented, shaded overlay distinct from the chat behind it.
+`/agents` lists the main chat and every live agent as a tree. Arrows select, `→` expands, `←`
+collapses, `Enter` opens, `x` cancels an agent and its descendants (after a `y/n` confirmation), and
+`Esc` returns to the chat.
 
-| Key | Action |
-| --- | --- |
-| `↑` / `↓`, `j` / `k` | Select an agent |
-| `Tab` / `Shift-Tab`, `←` / `→` | Switch Team, Activity, Tools, Result, Patch, Compare tabs |
-| `p` | Pin or unpin an agent; pin two for comparison |
-| `PageUp` / `PageDown` | Scroll details |
-| `Esc` | Close the inspector; workers keep running |
+Opening an agent replaces the chat with **its full conversation** — every message, tool call, and
+tool result — with the agent's color on the header, a rule, and its message bands so it is obvious
+you are not in the main chat. `Esc` returns to `/agents`, `Esc` again to the chat. The main chat
+opens the same way, read from the live session.
 
-`/team status` refreshes the summary. `/team cancel <full-agent-id>` cancels a worker and its descendants. Cancellation preserves worktrees for review. The overlay covers part of chat; it is not a docked split-pane layout.
+Agents spawned by one `spawn_agents` call form a comparison group: one group row, opened as two
+columns with its own header per agent. `s` toggles between two columns and one at a time, `tab`
+switches which column the page keys scroll.
+
+| Key | In `/agents` | In a transcript |
+| --- | --- | --- |
+| `↑` / `↓`, `j` / `k` | Select | Scroll the focused agent |
+| `→` / `←` | Expand / collapse | — |
+| `Enter` | Open the selected agent or group | — |
+| `x` | Cancel the selected agent (+ descendants) | — |
+| `s` | — | One column / two columns |
+| `tab` | — | Focus the other agent |
+| `PageUp` / `PageDown`, `Home` / `End` | — | Scroll / jump |
+| `Esc` | Close the list | Back to `/agents` |
 
 ### Agent tools
 

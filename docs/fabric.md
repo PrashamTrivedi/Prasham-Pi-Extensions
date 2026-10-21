@@ -29,6 +29,8 @@ qwen  (1) → qwen
 
 Workers launch a real Pi process with `--no-extensions --extension <exact Fabric entry>`, so Fabric works from a global package, project-local package, or explicit path without loading duplicate discovered extensions. Other automatically discovered extensions, including MCP adapters, are **not loaded in workers**. Workers still have Pi's built-in tools and normal configured model authentication. This deliberate policy favors reproducible workers; it is not a permissions sandbox. `PI_FABRIC_PI_BIN` can select the Pi executable.
 
+Each worker also persists a real session (`--session-dir .../sessions --session-id <agent-id>`) instead of running ephemerally, so its complete transcript can be replayed after it finishes or while it still works. Pi names the file `<timestamp>_<agent-id>.jsonl`; Fabric finds it by that suffix and records the path on the agent.
+
 ## Evidence and worktrees
 
 Each worker gets a new Git worktree based on the coordinator repository's committed HEAD at launch. Neither uncommitted parent edits nor dirty parent worktrees are copied. Commit or explicitly describe any context the child needs before delegation.
@@ -39,12 +41,26 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
 
 ## UI and lifecycle
 
-- The compact widget prioritizes unfinished agents and caps visible rows.
-- Comparison cards grow during `await_agents`; detailed final packets remain available on disk.
-- `/team` opens a framed inspector. Pin two agents with `p`, then choose Compare.
-- Result previews are bounded. An empty patch from a read-only worker is normal.
-- `/team hide` changes visibility only. `/team cancel <full-id>` requests cancellation of a subtree.
-- Reload restores a run reference saved in the active Pi session branch. Old pre-package sessions may lack that reference.
+- **Agent rows below the prompt** are the always-on surface. They appear the moment a child spawns
+  (main first, children indented, groups marked) and disappear when the main chat is alone. Each row
+  is one bounded line: status icon, the agent's color, name, model, current activity, elapsed time.
+- **`/agents`** is the only keyboard path to a transcript: a tree of main plus every live agent with
+  expand/collapse, group rows, `x` to cancel (inline `y/n`), and `Esc` back to the chat.
+- **Opening an agent takes the whole window** (a custom screen, not an overlay): a hue-tinted header,
+  a rule, and tinted message-header bands, then the replayed session. `Esc` steps back to `/agents`,
+  then to the chat. The main chat opens the same way from the live session file.
+- **Comparison groups** (one `spawn_agents` call) open as two columns; `s` toggles one/two, `tab`
+  switches focus, and each column keeps its own scroll position.
+- **Colors** are generated per agent from its id (theme-tuned for dark and light), so an agent keeps
+  its color across sessions and siblings stay distinguishable.
+- **Idle sweep:** an agent that is done, failed, or cancelled and stays idle for ten minutes leaves
+  the rows and `/agents`. Pruning is display-only: `state.json`, result cards, `agent_status`, and
+  every file on disk keep working.
+- Result previews and transcript blocks are bounded; the saved session file keeps the rest.
+- `/team` and `/transcript` no longer exist; their jobs are the rows, `/agents`, and the transcript
+  screen.
+- Reload restores a run reference saved in the active Pi session branch. Old pre-package sessions
+  may lack that reference.
 - Temporary run files must still exist to reconnect; they are not a durable archive.
 
 There is no automatic inter-agent debate or message mailbox. Use the parent to assign independent investigations, await their evidence, and synthesize the conclusion.

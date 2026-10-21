@@ -8,12 +8,16 @@ markdown cannot.
 
 1. **Permission floor.** A short allow/confirm/deny policy enforced on `tool_call` and `user_bash`,
    fail-closed when there is no UI. A pattern is a case-insensitive substring, or a `/regex/` when
-   slash-delimited. This is pass 1 only. The shell-safety pass 2 is owned by `extensions/jev`
-   (Phase 5): when it lands it may **escalate** these verdicts, never lower them (`strongest()`).
+   slash-delimited. Shell `confirm` verdicts are resolved through Jev (the `jev-gate` shell-safety
+   decision via `shared/jev.ts`): a safe command auto-approves (with a notify line), a destructive
+   one is blocked, and a risky/uncertain one — or an unavailable Jev — falls through to the human
+   confirm. Non-shell `confirm` (path outside cwd) stays deterministic.
 2. **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md`
-   from disk and appends the gate to the chat. The human answers in the transcript (**`g`** /
-   **`t: <feedback>`** / **`r`**); the chat is the record, and the agent reads it. The extension
-   records nothing and does not classify the reply.
+   from disk, asks Jev (`shared/jev.ts` `askJev`) whether the plan is safe to implement autonomously,
+   and either auto-approves (anchors the outcome, records a `sandbox-dev-gate` audit message, and
+   tells the agent to proceed) or appends the gate to the chat for the human. The human answers in
+   the transcript (**`g`** / **`t: <feedback>`** / **`r`**); the chat is the record. Any Jev failure
+   fails closed to the human gate.
 3. **Single-outcome anchoring.** The plan's `Original Ask` is the anchored outcome. Supervision arms
    on the first source write after the gate, restates the outcome each turn, enforces a turn budget,
    and stops when `dev_outcome_met` records evidence. Running out of budget is tracked separately and
@@ -32,10 +36,12 @@ markdown cannot.
 ## Approval flow
 
 1. The model calls `dev_request_approval`, or the human starts the flow with `/codePlanner`.
-2. The extension appends a `sandbox-dev gate` message to the transcript and stops. It records nothing
-   and does not intercept the reply.
-3. The human replies **in the chat**. That reply is a normal turn the agent reads; the transcript is
-   the record. The agent implements only when the human approves.
+2. The extension asks Jev whether the plan is safe to implement autonomously. If safe, it
+   auto-approves (anchor armed, audit `sandbox-dev-gate` message recorded) and tells the model to
+   proceed — no human reply is needed. If risky, uncertain, or Jev is unavailable, it appends a
+   `sandbox-dev gate` message to the transcript and stops.
+3. The human replies **in the chat** for the risky case. That reply is a normal turn the agent
+   reads; the transcript is the record.
 4. `/dev-approve <task>` is an explicit human command: it anchors the outcome and starts `/startWork`.
 
 ## Configuration

@@ -5,6 +5,7 @@ import {
   isImplementation,
   isOutsideCwd,
   isPlanningPath,
+  isShellConfirm,
   matchPattern,
   strongest,
   type PolicyConfig,
@@ -71,6 +72,15 @@ describe("classifyToolCall", () => {
     const config: PolicyConfig = { ...DEFAULT_CONFIG, tools: { deny: ["mcp__danger"], confirm: [] } };
     expect(classifyToolCall({ toolName: "mcp__danger", input: {} }, cwd, config).verdict).toBe("deny");
     expect(classifyToolCall({ toolName: "dev_outcome_met", input: {} }, cwd, config).verdict).toBe("allow");
+  });
+});
+
+describe("isShellConfirm", () => {
+  test("is true for bash and powershell, false for other tools", () => {
+    expect(isShellConfirm({ toolName: "bash", input: { command: "npm install" } })).toBe(true);
+    expect(isShellConfirm({ toolName: "powershell", input: { command: "Get-ChildItem" } })).toBe(true);
+    expect(isShellConfirm({ toolName: "write", input: { path: "/etc/hosts" } })).toBe(false);
+    expect(isShellConfirm({ toolName: "read", input: { path: "src/a.ts" } })).toBe(false);
   });
 });
 
