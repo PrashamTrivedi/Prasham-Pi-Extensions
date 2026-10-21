@@ -78,3 +78,33 @@ Run in this repo after `/reload`.
    `Enter` on it still opens the full transcript.
 6. `/team hide` removes the status line without stopping workers; `/team show` restores it.
 7. Terminal width 40 columns: the inspector and the transcript must not overflow the frame.
+
+## Revision — full window, and no `/team` detour
+
+Human feedback: the transcript "isn't fullscreen", it "should render within the pi window", and it
+"must be accessible without team". Three changes.
+
+1. **A real screen, not an overlay.** `ctx.ui.custom()` is now called without `overlay`, so the
+   component owns Pi's interactive area instead of floating above the chat. A full-window screen
+   shares the terminal with Pi's own footer (cwd/branch, context+model, one status row — every
+   extension status shares that single row), so the view renders `rows - 3` lines and pads to
+   exactly that height. Filling `rows` pushed the title off the top: verified in a live TUI, fixed,
+   re-verified.
+2. **`/transcript [id|prefix|label]`.** No argument opens `TranscriptPickerOverlay`: every run
+   newest first, with model, status, relative age, and "no transcript yet" when a run has no saved
+   session. Enter opens, Esc closes, and Esc in a transcript returns to the list. An argument
+   accepts a full id, an id prefix, or a label fragment (`matchRuns`); several matches are listed
+   instead of guessed.
+3. **`alt+t`** registers the same picker as a shortcut, so a transcript never requires `/team`.
+
+`/team` keeps its framed overlay and its `Enter` now opens the same full-window view.
+
+### Verified in a live Pi TUI (Herdr pane, not a mock)
+
+- 104x30 pane: title on row 1, 29 body rows, hint, padding, then Pi's 3-row footer — no clipping,
+  no chat visible.
+- 64x24 pane: wrapped to 62 columns, every line ≤ 64, `End` jumped to the result packet.
+- `/transcript` and `alt+t` both opened the picker; `Enter` opened the transcript; `Esc` stepped
+  transcript → picker → chat; `g`/`G`/space scrolled and clamped.
+- Status line read `◆ fabric 1 running · 1 archived` with a 15-minute-old finished run, proving the
+  prune filter against a real state file.

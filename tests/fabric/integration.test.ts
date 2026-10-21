@@ -22,6 +22,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
   const events = new Map<string, Function>();
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
+  const shortcuts = new Map<string, any>();
   const renderers = new Map<string, Function>();
   const widgets = new Map<string, any>();
   const statuses: Array<[string, string | undefined]> = [];
@@ -33,6 +34,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
     on: (name: string, fn: Function) => events.set(name, fn),
     registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
+    registerShortcut: (key: string, options: any) => shortcuts.set(key, options),
     registerEntryRenderer: (name: string, fn: Function) => renderers.set(name, fn),
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
   };
@@ -52,7 +54,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
       }),
     },
   };
-  return { dir, ctx, pi, entries, events, tools, commands, renderers, widgets, statuses, overlays, drivers, notified,
+  return { dir, ctx, pi, entries, events, tools, commands, shortcuts, renderers, widgets, statuses, overlays, drivers, notified,
     cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -146,7 +148,10 @@ test("finished runs leave the live team view, /team all reveals them, and enter 
       view.handleInput("\r"); // open its transcript
     });
     host.drivers.push((view) => {
-      transcriptView = view.render(120).join("\n");
+      const frame = view.render(120);
+      // A custom screen owns the interactive area: it fills the window minus Pi's 3-row footer.
+      expect(frame).toHaveLength(37);
+      transcriptView = frame.join("\n");
       view.handleInput("\u001b"); // back to the inspector
     });
     host.drivers.push((view, done) => {
@@ -165,9 +170,11 @@ test("finished runs leave the live team view, /team all reveals them, and enter 
     expect(transcriptView).toContain("The stale run failed on the lock.");
     expect(transcriptView).toContain("exit 1");
     expect(returnedToInspector).toBe(true);
-    // The transcript overlay takes the whole window; reopening the inspector shrinks again.
-    expect(host.overlays.filter(option => option?.width === "100%" && option?.maxHeight === "100%")).toHaveLength(1);
-    expect(host.overlays.at(-1)).toMatchObject({ width: "95%", maxHeight: "90%" });
+    // The transcript takes the whole Pi window: `ui.custom` without `overlay`, so the chat is replaced.
+    expect(host.overlays).toHaveLength(3);
+    expect(host.overlays[0]).toMatchObject({ width: "95%", maxHeight: "90%" }); // inspector
+    expect(host.overlays[1]).toBeUndefined(); // transcript, full screen
+    expect(host.overlays[2]).toMatchObject({ width: "95%", maxHeight: "90%" }); // inspector again
 
     // Forensics: agent_status still lists the pruned run and says why it is hidden.
     const status = await host.tools.get("agent_status").execute("call", {}, undefined, undefined, host.ctx);
@@ -191,6 +198,74 @@ test("a run without a saved session says so instead of opening an empty viewer",
     await host.commands.get("team").handler("", host.ctx);
     expect(host.notified.join("\n")).toContain("no saved transcript");
     expect(host.overlays).toHaveLength(2); // inspector, inspector again — no transcript overlay
+  } finally {
+    host.events.get("session_shutdown")?.({}, host.ctx);
+    host.cleanup(); restoreEnv();
+  }
+});
+
+test("/transcript opens a run without /team: picker, direct id/label, and the alt+t shortcut", async () => {
+  const rootId = randomUUID();
+  const host = harness(rootId, {
+    // Distinct timestamps make the newest-first order deterministic: beta, then alpha.
+    "alpha-1111": { id: "alpha-1111", label: "Version check", model: "terra", task: "t", status: "done", finishedAt: new Date(Date.now() - 10 * 60_000).toISOString() },
+    "beta-2222": { id: "beta-2222", label: "Line counts", model: "terra", task: "t", status: "running", startedAt: new Date(Date.now() - 60_000).toISOString() },
+  });
+  const line = (entry: unknown) => JSON.stringify(entry);
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_alpha-1111.jsonl"), [
+    line({ type: "session", version: 3, id: "alpha-1111", cwd: "/tmp" }),
+    line({ type: "message", message: { role: "user", content: "Report the version." } }),
+    line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Version 0.1.0." }] } }),
+  ].join("\n"));
+  writeFileSync(join(host.dir, "sessions", "2026-01-01T00-00-00-000Z_beta-2222.jsonl"), [
+    line({ type: "session", version: 3, id: "beta-2222", cwd: "/tmp" }),
+    line({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Counting lines." }] } }),
+  ].join("\n"));
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+
+    // The shortcut is registered and reaches the same picker.
+    expect([...host.shortcuts.keys()]).toEqual(["alt+t"]);
+
+    // No argument: a picker lists every run, newest first.
+    let pickerText = "";
+    let transcriptText = "";
+    host.drivers.push((view) => {
+      pickerText = view.render(100).join("\n");
+      expect(pickerText).toContain("Line counts");
+      view.handleInput("j"); // newest first: beta, then alpha
+      view.handleInput("\r"); // open it
+    });
+    host.drivers.push((view) => {
+      transcriptText = view.render(100).join("\n");
+      expect(view.render(100)).toHaveLength(37);
+      view.handleInput("\u001b"); // back to the picker
+    });
+    host.drivers.push((_view, done) => done(undefined)); // esc closes the picker
+    await host.commands.get("transcript").handler("", host.ctx);
+
+    expect(pickerText).toContain("Run transcripts");
+    expect(pickerText).toContain("Version check");
+    expect(pickerText).toContain("Line counts");
+    expect(pickerText).not.toContain("no transcript yet");
+    expect(transcriptText).toContain("Report the version.");
+    expect(transcriptText).toContain("Version 0.1.0.");
+    expect(host.overlays.filter(option => option === undefined)).toHaveLength(1); // only the transcript is full screen
+
+    // An id prefix opens directly, with no picker at all.
+    let direct = "";
+    host.drivers.push((view, done) => { direct = view.render(100).join("\n"); done(undefined); });
+    await host.commands.get("transcript").handler("beta-2", host.ctx);
+    expect(direct).toContain("Counting lines.");
+    expect(direct).not.toContain("Report the version.");
+
+    // A label fragment works too; an unknown query only notifies.
+    host.drivers.push((view, done) => { done(undefined); expect(view.render(100).join("\n")).toContain("Report the version."); });
+    await host.commands.get("transcript").handler("version check", host.ctx);
+    host.drivers.length = 0;
+    await host.commands.get("transcript").handler("nope", host.ctx);
+    expect(host.notified.join("\n")).toContain("No Fabric run matches 'nope'");
   } finally {
     host.events.get("session_shutdown")?.({}, host.ctx);
     host.cleanup(); restoreEnv();

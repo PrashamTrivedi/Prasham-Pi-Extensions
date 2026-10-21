@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { LiveTeamInspectorOverlay, renderComparisonResultCard, TranscriptViewerOverlay, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptSource } from "./ui.ts";
+import { LiveTeamInspectorOverlay, renderComparisonResultCard, TranscriptPickerOverlay, TranscriptViewerOverlay, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptSource } from "./ui.ts";
 import { Type, type Static } from "typebox";
 
 type AgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
@@ -101,6 +101,23 @@ export function isPruned(agent: { status: AgentStatus; finishedAt?: string }, no
 /** Agents the live views list: everything except runs pruned from the pane. */
 export function visibleAgents<T extends { status: AgentStatus; finishedAt?: string }>(agents: T[], now = Date.now(), pruneAfterMs = PRUNE_AFTER_MS): T[] {
   return agents.filter((agent) => !isPruned(agent, now, pruneAfterMs));
+}
+
+/**
+ * `/transcript <query>` accepts a full id, an id prefix, or a label fragment.
+ * Exact ids win over prefixes, which win over labels, so short ids stay usable.
+ */
+export function matchRuns<T extends { id: string; label: string }>(agents: readonly T[], query: string): T[] {
+  const wanted = query.trim();
+  if (!wanted) return [];
+  const exact = agents.filter((agent) => agent.id === wanted);
+  if (exact.length) return exact;
+  const prefixed = agents.filter((agent) => agent.id.startsWith(wanted));
+  if (prefixed.length) return prefixed;
+  const needle = wanted.toLowerCase();
+  const labelled = agents.filter((agent) => agent.label.toLowerCase().includes(needle));
+  if (labelled.length) return labelled;
+  return agents.filter((agent) => agent.id.includes(needle));
 }
 
 /** Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer. */
@@ -347,6 +364,14 @@ function resultText(agent: FabricAgent): string {
   return readFileSync(agent.resultPath, "utf8");
 }
 
+/**
+ * Rows a full-window custom screen may draw. Pi keeps its own footer below the
+ * screen: cwd/branch, context+model, and one status row (every extension status
+ * shares that row). Filling the whole terminal scrolls the first rows out of view.
+ */
+const PI_FOOTER_ROWS = 3;
+function windowHeight(rows: number): number { return Math.max(8, rows - PI_FOOTER_ROWS); }
+
 /** Draws a full-window overlay body inside the same frame the inspector uses. */
 function framedOverlayLines(theme: { fg: (color: any, text: string) => string; bg: (color: any, text: string) => string }, width: number, body: readonly string[]): string[] {
   const inner = Math.max(1, width - 4);
@@ -407,6 +432,111 @@ export default function piFabric(pi: ExtensionAPI) {
       if (agents.length > visible.length) lines.push(truncateToWidth(`+ ${agents.length - visible.length} more · expand tool output or open /team`, width));
       return lines;
     } };
+  }
+
+  /** Every run the transcript paths can reach, newest first (pruned runs included). */
+  function orderedRuns(): FabricAgentView[] {
+    if (!rootId || !existsSync(statePath(rootId))) return [];
+    let agents: FabricAgent[];
+    try { agents = Object.values(loadState(rootId).agents); } catch { return []; }
+    const dir = sessionsDir(rootId);
+    return views(agents)
+      .map((agent, index) => ({
+        // Fill in a missing link so the list honestly says whether a transcript can open.
+        agent: agent.sessionPath || !resolveSessionFile(dir, agent.id) ? agent : { ...agent, sessionPath: resolveSessionFile(dir, agent.id) },
+        key: agent.finishedAt ?? agent.startedAt ?? agents[index]!.createdAt,
+      }))
+      .sort((a, b) => b.key.localeCompare(a.key))
+      .map((item) => item.agent);
+  }
+
+  /** Resolves a run's saved session file, falling back to a suffix lookup for older runs. */
+  function transcriptOf(agentId: string): { agent: FabricAgent; path: string } | undefined {
+    if (!rootId || !existsSync(statePath(rootId))) return undefined;
+    let agent: FabricAgent | undefined;
+    try { agent = loadState(rootId).agents[agentId]; } catch { return undefined; }
+    if (!agent) return undefined;
+    const path = agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agentId);
+    return path && existsSync(path) ? { agent, path } : undefined;
+  }
+
+  /**
+   * Replays a run's transcript as a full-window screen inside Pi (not an overlay).
+   * The screen owns the interactive area, so the run fills the window instead of
+   * sharing it with the chat.
+   */
+  async function showTranscript(ctx: ExtensionContext, agentId: string): Promise<void> {
+    const found = transcriptOf(agentId);
+    if (!found) {
+      ctx.ui.notify("This run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
+      return;
+    }
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(`A transcript needs the interactive UI. Saved session: ${found.path}`, "info");
+      return;
+    }
+    const heading = (current: FabricAgent) => `${current.label} · ${short(current.id)} · ${current.model} · ${current.status}`;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      await ctx.ui.custom((tui, theme, _keys, done) => {
+        const viewer = new TranscriptViewerOverlay({
+          theme,
+          title: heading(found.agent),
+          read: () => readTranscript(found.path),
+          maxRows: Math.max(3, windowHeight(tui.terminal.rows) - 6),
+          onClose: () => done(undefined),
+        });
+        timer = setInterval(() => {
+          try {
+            const latest = rootId ? loadState(rootId).agents[agentId] : undefined;
+            if (latest) viewer.setTitle(heading(latest));
+            if (viewer.refresh()) tui.requestRender();
+          } catch { /* Keep the last transcript that rendered. */ }
+        }, 1000);
+        return {
+          invalidate: () => viewer.invalidate(),
+          handleInput: (input: string) => viewer.handleInput(input),
+          render: (width: number) => {
+            // Fill the screen's rows exactly: a non-overlay custom screen owns the interactive area.
+            const height = windowHeight(tui.terminal.rows);
+            const lines = viewer.render(width);
+            return lines.length >= height ? lines.slice(0, height) : [...lines, ...Array<string>(height - lines.length).fill("")];
+          },
+        };
+      });
+    } finally { if (timer) clearInterval(timer); }
+  }
+
+  /** The picker path: no `/team` round trip, and Esc from a transcript returns to the list. */
+  async function pickTranscript(ctx: ExtensionContext): Promise<void> {
+    while (true) {
+      const runs = orderedRuns();
+      if (!runs.length) {
+        ctx.ui.notify("Pi Fabric has no runs in this session yet. Spawn agents, then reopen this list.", "info");
+        return;
+      }
+      let chosen: string | undefined;
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        chosen = await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+          const picker = new TranscriptPickerOverlay({
+            theme,
+            runs,
+            maxRows: Math.max(3, Math.floor(tui.terminal.rows * 0.6)),
+            onOpen: (run) => done(run.id),
+            onClose: () => done(undefined),
+          });
+          timer = setInterval(() => { try { picker.setRuns(orderedRuns()); tui.requestRender(); } catch { /* Keep the last list. */ } }, 1000);
+          return {
+            invalidate: () => picker.invalidate(),
+            handleInput: (input: string) => picker.handleInput(input),
+            render: (width: number) => framedOverlayLines(theme, width, picker.render(Math.max(1, width - 4))),
+          };
+        }, { overlay: true, overlayOptions: { width: "84%", maxHeight: "70%" } });
+      } finally { if (timer) clearInterval(timer); }
+      if (!chosen) return;
+      await showTranscript(ctx, chosen);
+    }
   }
   function ensureRoot(ctx: ExtensionContext): string {
     // Drop a restore whose state was cleaned up, then re-apply the resolved policy
@@ -652,7 +782,7 @@ export default function piFabric(pi: ExtensionAPI) {
       const match = command.match(/^cancel\s+(.+)$/);
       if (match) { const cancelled = cancelTree(root, match[1]); updateUI(ctx); ctx.ui.notify(`Cancelled ${cancelled.length} Fabric agent(s).`, "info"); return; }
       if (command && command !== "all") {
-        ctx.ui.notify("Usage: /team | /team all | /team status | /team hide | /team show | /team cancel <agent-id>", "info");
+        ctx.ui.notify("Usage: /team | /team all | /team status | /team hide | /team show | /team cancel <agent-id> · /transcript [id|label] opens a full run", "info");
         return;
       }
       // Pruning is display-only: `all` (or `a` in the inspector) lists finished runs from the same state file.
@@ -667,41 +797,6 @@ export default function piFabric(pi: ExtensionAPI) {
         ctx.ui.notify([summary(state), ...treeLines(state, undefined, undefined, "", (agent) => showAll || !isPruned(agent))].join("\n"), "info");
         return;
       }
-
-      /** Opens the full-window replay of a run's saved session. */
-      const openTranscript = async (agentId: string) => {
-        const agent = loadState(root).agents[agentId];
-        const sessionPath = agent?.sessionPath ?? resolveSessionFile(sessionsDir(root), agentId);
-        if (!agent || !sessionPath || !existsSync(sessionPath)) {
-          ctx.ui.notify("This run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
-          return;
-        }
-        let timer: ReturnType<typeof setInterval> | undefined;
-        try {
-          await ctx.ui.custom((tui, theme, _keys, done) => {
-            const heading = (current: typeof agent) => `${current.label} · ${short(current.id)} · ${current.model} · ${current.status}`;
-            const viewer = new TranscriptViewerOverlay({
-              theme,
-              title: heading(agent),
-              read: () => readTranscript(sessionPath),
-              maxRows: Math.max(3, tui.terminal.rows - 6),
-              onClose: () => done(undefined),
-            });
-            timer = setInterval(() => {
-              try {
-                const current = loadState(root).agents[agentId];
-                if (current) viewer.setTitle(heading(current));
-                if (viewer.refresh()) tui.requestRender();
-              } catch { /* Keep the last transcript that rendered. */ }
-            }, 1000);
-            return {
-              invalidate: () => viewer.invalidate(),
-              handleInput: (input: string) => viewer.handleInput(input),
-              render: (width: number) => framedOverlayLines(theme, width, viewer.render(Math.max(1, width - 4))),
-            };
-          }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
-        } finally { if (timer) clearInterval(timer); }
-      };
 
       // Esc in the transcript returns to the inspector; Esc there closes the dashboard.
       let timer: ReturnType<typeof setInterval> | undefined;
@@ -730,9 +825,31 @@ export default function piFabric(pi: ExtensionAPI) {
           }, { overlay: true, overlayOptions: { width: "95%", maxHeight: "90%" } });
           if (timer) { clearInterval(timer); timer = undefined; }
           if (!chosen) return;
-          await openTranscript(chosen);
+          // Full-window replay (no overlay): Esc there returns to this inspector.
+          await showTranscript(ctx, chosen);
         }
       } finally { if (timer) clearInterval(timer); }
     },
   });
+
+  // Transcripts are reachable without opening the team dashboard (alt+t opens the same picker).
+  pi.registerCommand("transcript", {
+    description: "Open a Fabric run's full transcript; with no argument, list every run",
+    handler: async (args, ctx) => {
+      if (!rootId || !existsSync(statePath(rootId))) {
+        ctx.ui.notify("Pi Fabric has no runs in this session yet.", "info");
+        return;
+      }
+      const wanted = args.trim();
+      if (!wanted) { await pickTranscript(ctx); return; }
+      const matches = matchRuns(Object.values(loadState(rootId).agents), wanted);
+      if (!matches.length) { ctx.ui.notify(`No Fabric run matches '${wanted}'.`, "warning"); return; }
+      if (matches.length > 1) {
+        ctx.ui.notify(`'${wanted}' matches ${matches.length} runs: ${matches.map((agent) => `${agent.label} [${short(agent.id)}]`).join(", ")}`, "info");
+        return;
+      }
+      await showTranscript(ctx, matches[0]!.id);
+    },
+  });
+  pi.registerShortcut("alt+t", { description: "Open a Fabric run transcript", handler: async (ctx) => { await pickTranscript(ctx); } });
 }

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, isPruned, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { buildChildArgs, capturePatch, effectiveRule, isPruned, matchRuns, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -148,4 +148,19 @@ test("patch capture includes committed and untracked changes without changing th
   expect(patch).toContain("untracked payload");
   expect(patch).toContain("staged.txt");
   expect(readFileSync(join(repo, ".git", "index")).equals(indexBefore)).toBe(true);
+});
+
+test("/transcript matches an exact id, then a prefix, then a label, and never guesses", () => {
+  const runs = [
+    { id: "alpha-1111", label: "Version check" },
+    { id: "alpha-2222", label: "Line counts" },
+    { id: "beta-3333", label: "Review the parser" },
+  ];
+  expect(matchRuns(runs, "alpha-2222").map((run) => run.id)).toEqual(["alpha-2222"]);
+  expect(matchRuns(runs, "alpha").map((run) => run.id)).toEqual(["alpha-1111", "alpha-2222"]);
+  expect(matchRuns(runs, "VERSION").map((run) => run.id)).toEqual(["alpha-1111"]);
+  expect(matchRuns(runs, "parser").map((run) => run.id)).toEqual(["beta-3333"]);
+  expect(matchRuns(runs, "3333").map((run) => run.id)).toEqual(["beta-3333"]);
+  expect(matchRuns(runs, "nope")).toEqual([]);
+  expect(matchRuns(runs, "  ")).toEqual([]);
 });

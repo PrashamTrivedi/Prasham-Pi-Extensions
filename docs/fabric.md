@@ -43,7 +43,8 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
 
 - The live surface is the accent status line; finished agents stop counting five minutes after `finishedAt`.
 - Comparison cards grow during `await_agents`; detailed final packets remain available on disk.
-- `/team` opens a framed inspector. Pin two agents with `p`, then choose Compare. `Enter` replays the selected run's full transcript; `a` (or `/team all`) includes finished runs that have already left the live list.
+- `/team` opens a framed inspector. Pin two agents with `p`, then choose Compare. `Enter` replays the selected run's transcript; `a` (or `/team all`) includes finished runs that have already left the live list.
+- A transcript is a full-window custom screen (not an overlay): it owns the interactive area and leaves only Pi's footer, so the run reads like a normal session. It is reachable without `/team` through `/transcript [id|prefix|label]` or the `alt+t` shortcut, which list every run including pruned ones. `Esc` returns transcript → list → chat.
 - Result previews are bounded. An empty patch from a read-only worker is normal. Transcript blocks are bounded too, and the saved session file keeps the rest.
 - Pruning is display-only: `agent_status` still lists every run and notes how many are hidden from the live views.
 - `/team hide` / `/team show` toggle the status line only. `/team cancel <full-id>` requests cancellation of a subtree.

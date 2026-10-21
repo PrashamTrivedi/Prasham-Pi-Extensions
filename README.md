@@ -75,7 +75,7 @@ Finished workers leave that count five minutes after they finish. Pruning is dis
 
 While `await_agents` runs, cards update with reported findings. Wide terminals show two cards side by side; narrow terminals stack them. Expand the tool output for additional agents and detail. Finished workers also produce persistent transcript cards without adding UI telemetry to the parent model's context.
 
-### 3. Framed team inspector and full-run transcript
+### 3. Framed team inspector
 
 Open `/team` for an accented, shaded overlay distinct from the chat behind it.
 
@@ -89,9 +89,18 @@ Open `/team` for an accented, shaded overlay distinct from the chat behind it.
 | `PageUp` / `PageDown` | Scroll details |
 | `Esc` | Close the inspector; workers keep running |
 
-`Enter` replays the run's saved Pi session in a full-window view: user and assistant text, thinking, tool calls with their arguments, and tool results in order. Every child now keeps a real session file under `pi-fabric/<root-id>/sessions/`, so a run can be read like any normal Pi session. `PageUp`/`PageDown` or `j`/`k` scroll, `Home`/`End` (or `g`/`G`) jump, and `Esc` returns to the inspector. A live run keeps updating while it works.
+`/team status` refreshes the summary. `/team cancel <full-agent-id>` cancels a worker and its descendants. Cancellation preserves worktrees for review. `/team hide` and `/team show` toggle the status line. The inspector covers part of chat; it is not a docked split-pane layout.
 
-`/team status` refreshes the summary. `/team cancel <full-agent-id>` cancels a worker and its descendants. Cancellation preserves worktrees for review. `/team hide` and `/team show` now toggle the status line. The overlay covers part of chat; it is not a docked split-pane layout.
+### 4. The whole run, full window
+
+A run is a Pi session, so Fabric shows it as one. `/transcript` (or `alt+t`) lists every run — including ones pruned from the live list — and `Enter` replays the selected run across the **whole Pi window**, not in a pane: user and assistant text, thinking, tool calls with their arguments, and tool results in order. `PageUp`/`PageDown` or `j`/`k` scroll, `Home`/`End` (or `g`/`G`) jump, and a still-running agent keeps streaming into the view. `Esc` steps back: transcript → run list → chat.
+
+```text
+/transcript              # every run, newest first
+/transcript bfde         # id, id prefix, or label fragment
+```
+
+Every child keeps a real session file under `pi-fabric/<root-id>/sessions/`, so a run can be read like any normal Pi session — and `Enter` in `/team` opens the same full-window view.
 
 ### Agent tools
 

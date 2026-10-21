@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderComparisonResultCard, LiveTeamInspectorOverlay, TranscriptViewerOverlay, parseSessionLine, parseSessionText, TRANSCRIPT_ARGS_LIMIT, type FabricAgentView } from "../../extensions/fabric/ui.ts";
+import { renderComparisonResultCard, LiveTeamInspectorOverlay, TranscriptPickerOverlay, TranscriptViewerOverlay, parseSessionLine, parseSessionText, relativeAge, TRANSCRIPT_ARGS_LIMIT, type FabricAgentView } from "../../extensions/fabric/ui.ts";
 import { clean, publishActivity, readActivity, readPreview } from "../../extensions/fabric/activity.ts";
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 const agents: FabricAgentView[] = Array.from({ length: 8 }, (_, i) => ({ id: `agent-${i}`, label: `Option ${i} 界`, model: "terra", status: i % 2 ? "done" : "running", activity: "Running tests", result: `Finding ${i}\nEvidence ${i}`, patch: "+first line\n-second line" }));
@@ -156,4 +156,52 @@ test("the inspector opens the transcript on enter and toggles the filter on a", 
  inspector.handleInput("a");
  expect(toggles).toBe(1);
  expect(inspector.render(100).join("\n")).toContain("enter transcript");
+});
+
+/* ---------- run picker ---------- */
+
+test("relative age is short, monotonic, and tolerant of a missing timestamp", () => {
+ const now = Date.parse("2026-01-02T12:00:00.000Z");
+ const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+ expect(relativeAge(at(5_000), now)).toBe("just now");
+ expect(relativeAge(at(4 * 60_000), now)).toBe("4m ago");
+ expect(relativeAge(at(3 * 60 * 60_000), now)).toBe("3h ago");
+ expect(relativeAge(at(2 * 24 * 60 * 60_000), now)).toBe("2d ago");
+ expect(relativeAge(undefined, now)).toBe("");
+ expect(relativeAge("not a date", now)).toBe("");
+});
+
+test("the picker lists runs, moves, clamps, and keeps its selection across refreshes", () => {
+ const runs = [
+  { id: "b", label: "Newest", model: "terra", status: "running" as const, sessionPath: "/tmp/b.jsonl", startedAt: new Date().toISOString() },
+  { id: "a", label: "Older", model: "terra", status: "done" as const, finishedAt: new Date(Date.now() - 90 * 60_000).toISOString() },
+ ];
+ let opened: string | undefined;
+ let closed = 0;
+ const picker = new TranscriptPickerOverlay({ theme, runs, onOpen: (run) => opened = run.id, onClose: () => closed++ });
+ for (const width of [1, 2, 3, 40, 120]) for (const line of picker.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+ const text = picker.render(100).join("\n");
+ expect(text).toContain("Run transcripts  2 runs");
+ expect(text).toContain("Newest");
+ expect(text).toContain("no transcript yet"); // only the run without a saved session
+ picker.handleInput("\r");
+ expect(opened).toBe("b");
+ picker.handleInput("j");
+ picker.handleInput("j"); // clamped at the end
+ picker.handleInput("\r");
+ expect(opened).toBe("a");
+ // A refresh (a run finishing) keeps "a" selected rather than jumping to the newest.
+ picker.setRuns([...runs, { id: "c", label: "Fresh", model: "terra", status: "done" as const, finishedAt: new Date().toISOString() }]);
+ picker.handleInput("\r");
+ expect(opened).toBe("a");
+ picker.handleInput("\u001b");
+ expect(closed).toBe(1);
+});
+
+test("the picker explains an empty run list instead of rendering a blank frame", () => {
+ const picker = new TranscriptPickerOverlay({ theme, runs: [], onOpen: () => {}, onClose: () => {} });
+ const text = picker.render(80).join("\n");
+ expect(text).toContain("Run transcripts  0 runs");
+ expect(text).toContain("No Fabric runs in this session yet");
+ picker.handleInput("\r"); // no selection, no crash, no open
 });

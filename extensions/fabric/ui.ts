@@ -449,12 +449,15 @@ export class TranscriptViewerOverlay implements Component {
       : "No transcript entries saved yet.";
     const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(this.title)), width), truncateToWidth(this.theme.fg("muted", meta), width)];
     if (this.source.notice) lines.push(truncateToWidth(this.theme.fg("warning", this.source.notice), width));
+    lines.push(this.rule(width));
     const visible = body.slice(this.offset, this.offset + rows);
     if (!visible.length) lines.push(truncateToWidth(this.theme.fg("dim", "This run has not written any messages yet."), width));
     lines.push(...visible);
+    lines.push(this.rule(width));
     lines.push(truncateToWidth(this.theme.fg("dim", "pgup/pgdn scroll · home/end jump · esc back"), width));
     return lines.map((line) => truncateToWidth(line, width));
   }
+  private rule(width: number): string { return truncateToWidth(this.theme.fg("border", "─".repeat(Math.max(1, width))), width); }
   private rows(): number { return Math.max(3, this.maxRows); }
   private bodyLines(width: number): string[] {
     if (this.cache && this.cache.width === width && this.cache.text === this.source.text) return this.cache.lines;
@@ -472,4 +475,93 @@ export class TranscriptViewerOverlay implements Component {
     this.cache = { width, text: this.source.text, lines };
     return lines;
   }
+}
+
+/* ---------- run picker ---------- */
+
+/** Short relative age for run lists. Pure so lists stay deterministic in tests. */
+export function relativeAge(iso: string | undefined, now = Date.now()): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  const seconds = Math.max(0, Math.round((now - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+export interface TranscriptPickerOptions {
+  theme: FabricTheme;
+  /** Runs in the order they should be listed (the caller sorts newest first). */
+  runs: readonly FabricAgentView[];
+  onOpen: (run: FabricAgentView) => void;
+  onClose?: () => void;
+  /** Visible list rows. Default: 12. */
+  maxRows?: number;
+}
+
+/**
+ * Lists Fabric runs so a transcript can be opened without going through `/team`.
+ * Keys: ↑/↓ or j/k select, home/end jump, enter opens, esc closes.
+ */
+export class TranscriptPickerOverlay implements Component {
+  private readonly theme: FabricTheme;
+  private readonly onOpen: (run: FabricAgentView) => void;
+  private readonly onClose?: () => void;
+  private readonly maxRows: number;
+  private runs: FabricAgentView[];
+  private selected = 0;
+
+  constructor(options: TranscriptPickerOptions) {
+    this.theme = options.theme;
+    this.onOpen = options.onOpen;
+    this.onClose = options.onClose;
+    this.maxRows = Math.max(3, options.maxRows ?? 12);
+    this.runs = [...options.runs];
+  }
+  /** Keeps the same run selected while the list refreshes under an open picker. */
+  setRuns(runs: readonly FabricAgentView[]): void {
+    const selectedId = this.runs[this.selected]?.id;
+    this.runs = [...runs];
+    const next = this.runs.findIndex((run) => run.id === selectedId);
+    this.selected = Math.max(0, next);
+    this.clamp();
+  }
+  invalidate(): void { /* Rendering is calculated fresh each frame. */ }
+  handleInput(input: string): void {
+    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+    if (matchesKey(input, Key.enter)) { const run = this.runs[this.selected]; if (run) this.onOpen(run); return; }
+    if (matchesKey(input, Key.up) || input === "k") this.selected -= 1;
+    else if (matchesKey(input, Key.down) || input === "j") this.selected += 1;
+    else if (matchesKey(input, Key.home) || input === "g") this.selected = 0;
+    else if (matchesKey(input, Key.end) || input === "G") this.selected = this.runs.length - 1;
+    else return;
+    this.clamp();
+  }
+  render(width: number): string[] {
+    if (width < 1) return [];
+    const rows = this.rows();
+    const start = Math.max(0, Math.min(this.selected - Math.floor(rows / 2), Math.max(0, this.runs.length - rows)));
+    const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(`Run transcripts  ${this.runs.length} run${this.runs.length === 1 ? "" : "s"}`)), width)];
+    if (!this.runs.length) {
+      lines.push(truncateToWidth(this.theme.fg("dim", "No Fabric runs in this session yet. Spawn agents, then reopen this list."), width));
+      lines.push(truncateToWidth(this.theme.fg("dim", "esc close"), width));
+      return lines.map((line) => truncateToWidth(line, width));
+    }
+    for (const [index, run] of this.runs.slice(start, start + rows).entries()) {
+      const cursor = start + index === this.selected ? this.theme.fg("accent", "›") : " ";
+      const icon = this.theme.fg(statusColor[run.status], statusIcon[run.status]);
+      const meta = [short(run.id), run.model, run.status, relativeAge(run.finishedAt ?? run.startedAt)].filter(Boolean).join(" · ");
+      const missing = run.sessionPath ? "" : this.theme.fg("warning", " · no transcript yet");
+      lines.push(truncateToWidth(`${cursor} ${icon} ${run.label} ${this.theme.fg("dim", meta)}${missing}`, width));
+    }
+    if (this.runs.length > rows) lines.push(truncateToWidth(this.theme.fg("dim", `rows ${start + 1}-${Math.min(this.runs.length, start + rows)}/${this.runs.length}`), width));
+    lines.push(truncateToWidth(this.theme.fg("dim", "↑↓/j k select · enter open transcript · esc close"), width));
+    return lines.map((line) => truncateToWidth(line, width));
+  }
+  private rows(): number { return Math.max(3, this.maxRows); }
+  private clamp(): void { this.selected = Math.min(Math.max(0, this.selected), Math.max(0, this.runs.length - 1)); }
 }
