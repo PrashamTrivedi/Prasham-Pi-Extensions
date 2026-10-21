@@ -4,7 +4,7 @@
 
 A Git-installable collection of [Pi](https://github.com/earendil-works/pi-mono) extensions by [Prasham Trivedi](https://github.com/PrashamTrivedi). Fabric is the flagship: recursive agent teams with isolated Git worktrees and three live terminal views.
 
-![Illustrative preview of Fabric's live widget, comparison cards, and framed inspector](docs/preview.svg)
+![Illustrative preview of Fabric's status line, comparison cards, and framed inspector](docs/preview.svg)
 
 > The preview uses simulated, non-sensitive data. It is an illustration of the UI, not a recording of an agent run. Open [the interactive preview](https://PrashamTrivedi.github.io/Prasham-Pi-Extensions/preview.html), or run it locally with `npm run preview`.
 
@@ -65,27 +65,33 @@ Ask Pi naturally:
 
 The model decides whether delegation is useful. Fabric supplies the execution tools, not a mandatory workflow.
 
-### 1. Compact live widget
+### 1. One status line, no panel
 
-A small panel above the editor prioritizes unfinished work and shows each agent's latest activity. It refreshes without taking keyboard focus. Hide it with `/team hide`; bring it back with `/team show`. Hiding the panel does not stop workers.
+Fabric keeps a single persistent surface: the accent status line (`◆ fabric 2 running · 1 archived`). The old compact panel above the editor is gone, so the chat and the editor keep the full window.
+
+Finished workers leave that count five minutes after they finish. Pruning is display-only: `state.json`, `agent_status`, result cards, and the saved transcript stay on disk, and `/team all` lists the finished runs again.
 
 ### 2. Comparison cards in the conversation
 
 While `await_agents` runs, cards update with reported findings. Wide terminals show two cards side by side; narrow terminals stack them. Expand the tool output for additional agents and detail. Finished workers also produce persistent transcript cards without adding UI telemetry to the parent model's context.
 
-### 3. Framed team inspector
+### 3. Framed team inspector and full-run transcript
 
 Open `/team` for an accented, shaded overlay distinct from the chat behind it.
 
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Select an agent |
+| `Enter` | Open that run's **full transcript** |
+| `a` | Toggle finished runs (the same as `/team all`) |
 | `Tab` / `Shift-Tab`, `←` / `→` | Switch Team, Activity, Tools, Result, Patch, Compare tabs |
 | `p` | Pin or unpin an agent; pin two for comparison |
 | `PageUp` / `PageDown` | Scroll details |
 | `Esc` | Close the inspector; workers keep running |
 
-`/team status` refreshes the summary. `/team cancel <full-agent-id>` cancels a worker and its descendants. Cancellation preserves worktrees for review. The overlay covers part of chat; it is not a docked split-pane layout.
+`Enter` replays the run's saved Pi session in a full-window view: user and assistant text, thinking, tool calls with their arguments, and tool results in order. Every child now keeps a real session file under `pi-fabric/<root-id>/sessions/`, so a run can be read like any normal Pi session. `PageUp`/`PageDown` or `j`/`k` scroll, `Home`/`End` (or `g`/`G`) jump, and `Esc` returns to the inspector. A live run keeps updating while it works.
+
+`/team status` refreshes the summary. `/team cancel <full-agent-id>` cancels a worker and its descendants. Cancellation preserves worktrees for review. `/team hide` and `/team show` now toggle the status line. The overlay covers part of chat; it is not a docked split-pane layout.
 
 ### Agent tools
 

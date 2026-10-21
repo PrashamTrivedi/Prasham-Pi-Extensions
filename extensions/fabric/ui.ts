@@ -13,6 +13,7 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from "@earendil-works/pi-tui";
+import { clean } from "./activity.ts";
 
 export type FabricAgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
 
@@ -40,13 +41,8 @@ export interface FabricAgentView {
   tools?: string;
   resultPath?: string;
   patchPath?: string;
-}
-
-/** Input for the compact persistent widget. */
-export interface CompactWidgetData {
-  agents: readonly FabricAgentView[];
-  maxAgents?: number;
-  title?: string;
+  /** Saved Pi session file for this run; the full transcript is replayed from it. */
+  sessionPath?: string;
 }
 
 const statusIcon: Record<FabricAgentStatus, string> = {
@@ -70,23 +66,6 @@ function boundedLines(text: string | undefined, width: number, maxLines: number)
   const lines = wrapTextWithAnsi(text.replace(/\s+/g, " ").trim(), width);
   if (lines.length <= maxLines) return lines;
   return [...lines.slice(0, maxLines - 1), truncateToWidth(lines[maxLines - 1] ?? "", width, "…")];
-}
-
-/**
- * Renders a concise tree-free widget intended for `ctx.ui.setWidget`.
- * It deliberately caps rows so a large team cannot crowd out the editor.
- */
-export function renderCompactFabricWidget(data: CompactWidgetData, theme: FabricTheme, width = 80): string[] {
-  if (width < 1) return [];
-  const maxAgents = Math.max(0, data.maxAgents ?? 4);
-  const lines = [theme.fg("accent", `${data.title ?? "◆ PI FABRIC"}  ${countSummary(data.agents)}`)];
-  for (const agent of data.agents.slice(0, maxAgents)) {
-    const prefix = `${statusIcon[agent.status]} ${agent.label} · `;
-    const status = theme.fg(statusColor[agent.status], agent.activity || agent.status);
-    lines.push(truncateToWidth(theme.fg("muted", prefix) + status, width));
-  }
-  if (data.agents.length > maxAgents) lines.push(truncateToWidth(theme.fg("dim", `… ${data.agents.length - maxAgents} more agents`), width));
-  return lines.map((line) => truncateToWidth(line, width));
 }
 
 /** A tool result being compared; content is optional and bounded when displayed. */
@@ -151,6 +130,10 @@ export interface InspectorOptions {
   data: InspectorData;
   onChange?: (state: Readonly<InspectorState>) => void;
   onClose?: () => void;
+  /** Called on Enter for the selected agent; the caller usually opens its transcript. */
+  onOpen?: (agent: FabricAgentView) => void;
+  /** Called on `a`; the caller flips its pruned/all filter and re-supplies the data. */
+  onToggleFilter?: () => void;
 }
 export interface InspectorState {
   selectedId?: string;
@@ -173,12 +156,16 @@ export class LiveTeamInspectorOverlay implements Component {
   private readonly pinned = new Set<string>();
   private readonly onChange?: InspectorOptions["onChange"];
   private readonly onClose?: () => void;
+  private readonly onOpen?: InspectorOptions["onOpen"];
+  private readonly onToggleFilter?: InspectorOptions["onToggleFilter"];
 
   constructor(options: InspectorOptions) {
     this.theme = options.theme;
     this.data = options.data;
     this.onChange = options.onChange;
     this.onClose = options.onClose;
+    this.onOpen = options.onOpen;
+    this.onToggleFilter = options.onToggleFilter;
   }
   getState(): InspectorState {
     return { selectedId: this.agents()[this.selected]?.id, tab: this.tab, pinnedIds: [...this.pinned], scrollOffset: this.scrollOffset };
@@ -196,6 +183,8 @@ export class LiveTeamInspectorOverlay implements Component {
     const selectedId = agents[this.selected]?.id;
     let changedPins = false;
     if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+    if (matchesKey(input, Key.enter)) { const current = agents[this.selected]; if (current) this.onOpen?.(current); return; }
+    if (input === "a") { this.onToggleFilter?.(); return; }
     if (matchesKey(input, Key.up) || input === "k") this.selected = Math.max(0, this.selected - 1);
     else if (matchesKey(input, Key.down) || input === "j") this.selected = Math.min(Math.max(0, agents.length - 1), this.selected + 1);
     else if (matchesKey(input, Key.home)) this.selected = 0;
@@ -228,7 +217,7 @@ export class LiveTeamInspectorOverlay implements Component {
     this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
     lines.push(...body.slice(this.scrollOffset, this.scrollOffset + rows));
     if (body.length > rows) lines.push(truncateToWidth(this.theme.fg("dim", `rows ${this.scrollOffset + 1}-${Math.min(body.length, this.scrollOffset + rows)}/${body.length}`), width));
-    lines.push(truncateToWidth(this.theme.fg("dim", "↑↓/j k select · tab/←→ tabs · p pin · pgup/pgdn scroll · esc close"), width));
+    lines.push(truncateToWidth(this.theme.fg("dim", "↑↓/j k select · enter transcript · tab/←→ tabs · p pin · a filter · pgup/pgdn scroll · esc close"), width));
     return lines.map((line) => truncateToWidth(line, width));
   }
   private agents(): FabricAgentView[] { return [...this.data.agents].sort((a, b) => Number(this.pinned.has(b.id)) - Number(this.pinned.has(a.id))); }
@@ -248,7 +237,8 @@ export class LiveTeamInspectorOverlay implements Component {
     const fallback = this.tab === "result" ? (agent.error ?? "No result packet yet.") : "No patch captured yet.";
     const title = `${agent.label} · ${short(agent.id)} · ${agent.status}`;
     const path = this.tab === "patch" ? agent.patchPath : this.tab === "result" ? agent.resultPath : undefined;
-    return [this.theme.fg("accent", this.theme.bold(title)), ...(path ? wrapTextWithAnsi(path, Math.max(1, width)) : []), ...(source || fallback).split("\n").flatMap(line => wrapTextWithAnsi(line || " ", Math.max(1, width)))];
+    const transcript = agent.sessionPath ? [this.theme.fg("dim", `transcript: ${agent.sessionPath}`)] : [];
+    return [this.theme.fg("accent", this.theme.bold(title)), ...(path ? wrapTextWithAnsi(path, Math.max(1, width)) : []), ...transcript.map(line => truncateToWidth(line, width)), ...(source || fallback).split("\n").flatMap(line => wrapTextWithAnsi(line || " ", Math.max(1, width)))];
   }
   private compareLines(agents: FabricAgentView[], width: number): string[] {
     const pinned = agents.filter(agent => this.pinned.has(agent.id)).slice(0, 2);
@@ -258,4 +248,228 @@ export class LiveTeamInspectorOverlay implements Component {
   }
   private clamp(): void { this.selected = Math.min(Math.max(0, this.selected), Math.max(0, this.agents().length - 1)); this.scrollOffset = Math.max(0, this.scrollOffset); }
   private changed(): void { this.invalidate(); this.onChange?.(this.getState()); }
+}
+
+/* ---------- full-run transcript ---------- */
+
+/**
+ * One replayable block of a saved Pi session. A single JSONL line can produce
+ * several entries (an assistant message may hold text, thinking, and tool calls).
+ */
+export type TranscriptEntry =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "toolCall"; name: string; args: string }
+  | { kind: "toolResult"; name: string; text: string; isError: boolean }
+  | { kind: "note"; text: string };
+
+/** What a viewer reloads: session JSONL plus an optional banner (truncation, read error). */
+export interface TranscriptSource {
+  text: string;
+  notice?: string;
+}
+
+/** Per-block caps keep one huge tool result from crowding out the run. */
+export const TRANSCRIPT_TEXT_LIMIT = 8000;
+export const TRANSCRIPT_ARGS_LIMIT = 400;
+
+/** Strips terminal escapes without the short default cap `clean` applies. */
+function stripControls(value: string): string { return clean(value, Number.POSITIVE_INFINITY); }
+function boundedText(value: string, limit = TRANSCRIPT_TEXT_LIMIT): string {
+  const text = stripControls(value).replace(/\r\n/g, "\n").trimEnd();
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n… truncated ${text.length - limit} characters`;
+}
+function argText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value ?? {}) ?? ""; } catch { return ""; }
+}
+function partsOf(message: { content?: unknown }): unknown[] {
+  if (typeof message.content === "string") return [{ type: "text", text: message.content }];
+  return Array.isArray(message.content) ? message.content : [];
+}
+function blockText(parts: readonly unknown[]): string {
+  return parts
+    .map((part) => {
+      const block = part as { type?: string; text?: string; mimeType?: string };
+      if (block?.type === "text") return block.text ?? "";
+      if (block?.type === "image") return `[image ${block.mimeType ?? "attached"}]`;
+      return "";
+    })
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+/**
+ * Parses one session JSONL line into display blocks. Terminal control sequences
+ * are stripped, block sizes are bounded, and unrecognised lines yield nothing so
+ * a corrupt or truncated file still replays everything around it.
+ */
+export function parseSessionLine(line: string): TranscriptEntry[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let entry: Record<string, unknown>;
+  try { entry = JSON.parse(trimmed) as Record<string, unknown>; }
+  catch { return []; }
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+
+  const type = entry.type;
+  if (type === "model_change") return [{ kind: "note", text: `model → ${[entry.provider, entry.modelId].filter(Boolean).join("/")}` }];
+  if (type === "thinking_level_change") return [{ kind: "note", text: `thinking → ${String(entry.thinkingLevel ?? "default")}` }];
+  if (type === "branch_summary" && typeof entry.summary === "string") return [{ kind: "note", text: `branch summary: ${boundedText(entry.summary)}` }];
+  if (type !== "message") return [];
+
+  const message = entry.message as { role?: unknown; content?: unknown; toolName?: unknown; isError?: unknown } | undefined;
+  if (!message || typeof message !== "object") return [];
+  const parts = partsOf(message);
+  const entries: TranscriptEntry[] = [];
+
+  if (message.role === "user") {
+    for (const part of parts) {
+      const block = part as { type?: string; text?: string; mimeType?: string };
+      if (block?.type === "image") entries.push({ kind: "note", text: `[image ${block.mimeType ?? "attached"}]` });
+      else if (block?.type === "text" && block.text?.trim()) entries.push({ kind: "user", text: boundedText(block.text) });
+    }
+    return entries;
+  }
+  if (message.role === "assistant") {
+    for (const part of parts) {
+      const block = part as { type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown };
+      if (block?.type === "text" && block.text?.trim()) entries.push({ kind: "assistant", text: boundedText(block.text) });
+      else if (block?.type === "thinking" && block.thinking?.trim()) entries.push({ kind: "thinking", text: boundedText(block.thinking) });
+      else if (block?.type === "toolCall") entries.push({ kind: "toolCall", name: String(block.name ?? "tool"), args: boundedText(argText(block.arguments).replace(/\s+/g, " "), TRANSCRIPT_ARGS_LIMIT) });
+    }
+    return entries;
+  }
+  if (message.role === "toolResult") {
+    const text = boundedText(blockText(parts));
+    return [{ kind: "toolResult", name: String(message.toolName ?? "tool"), text: text || "(no output)", isError: message.isError === true }];
+  }
+  // System prompts and custom extension messages stay out of the replayed run.
+  return entries;
+}
+
+/** Parses a whole session file body (JSONL) in order. */
+export function parseSessionText(text: string): TranscriptEntry[] {
+  return text.split("\n").flatMap(parseSessionLine);
+}
+
+function describeEntry(entry: TranscriptEntry, theme: FabricTheme): { label: string; body: string } {
+  switch (entry.kind) {
+    case "user": return { label: theme.fg("accent", theme.bold("You")), body: entry.text };
+    case "assistant": return { label: theme.fg("text", theme.bold("Assistant")), body: entry.text };
+    case "thinking": return { label: theme.fg("dim", "thinking"), body: entry.text };
+    case "toolCall": return { label: theme.fg("warning", `⚙ ${entry.name}`), body: entry.args };
+    case "toolResult": return { label: theme.fg(entry.isError ? "error" : "muted", `${entry.isError ? "✗" : "✓"} ${entry.name}`), body: entry.text };
+    case "note": return { label: theme.fg("dim", "·"), body: entry.text };
+  }
+}
+
+export interface TranscriptViewerOptions {
+  theme: FabricTheme;
+  title: string;
+  /** Reloaded by `refresh()` so a still-running agent can be followed live. */
+  read?: () => TranscriptSource;
+  onClose?: () => void;
+  /** Visible body rows. Default: 20. */
+  maxRows?: number;
+}
+
+/**
+ * Full-window replay of a saved session: user/assistant text, thinking, tool
+ * calls, and tool results in order. Keys: pgup/pgdn or k/j scroll, home/end
+ * (g/G) jump, esc closes. Every rendered line is bounded to the given width.
+ */
+export class TranscriptViewerOverlay implements Component {
+  private readonly theme: FabricTheme;
+  private title: string;
+  private readonly read?: () => TranscriptSource;
+  private readonly onClose?: () => void;
+  private readonly maxRows: number;
+  private source: TranscriptSource = { text: "" };
+  private entries: TranscriptEntry[] = [];
+  private cache?: { width: number; text: string; lines: string[] };
+  private offset = 0;
+  private maxOffset = 0;
+
+  constructor(options: TranscriptViewerOptions) {
+    this.theme = options.theme;
+    this.title = options.title;
+    this.read = options.read;
+    this.onClose = options.onClose;
+    this.maxRows = Math.max(3, options.maxRows ?? 20);
+    if (this.read) this.setSource(this.read());
+  }
+  /** Theme or viewport changes drop the wrapped layout. */
+  invalidate(): void { this.cache = undefined; }
+  /** The header is not part of the wrapped layout, so a live status needs no relayout. */
+  setTitle(title: string): void { this.title = title; }
+  /** Re-reads the source; returns true when the transcript changed. */
+  refresh(): boolean {
+    if (!this.read) return false;
+    const next = this.read();
+    if (next.text === this.source.text && next.notice === this.source.notice) return false;
+    // Keep following the tail only when the reader was already at the tail.
+    const following = this.offset >= this.maxOffset && this.maxOffset > 0;
+    this.setSource(next);
+    if (following) this.offset = Number.MAX_SAFE_INTEGER;
+    return true;
+  }
+  setSource(source: TranscriptSource): void {
+    this.source = source;
+    this.entries = parseSessionText(source.text);
+    this.cache = undefined;
+    this.maxOffset = 0;
+  }
+  getState(): { offset: number; maxOffset: number; entries: number } {
+    return { offset: this.offset, maxOffset: this.maxOffset, entries: this.entries.length };
+  }
+  handleInput(input: string): void {
+    const page = Math.max(1, this.rows() - 2);
+    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+    if (matchesKey(input, Key.pageDown) || input === " " || input === "j") this.offset += page;
+    else if (matchesKey(input, Key.pageUp) || input === "k") this.offset -= page;
+    else if (matchesKey(input, Key.down)) this.offset += 1;
+    else if (matchesKey(input, Key.up)) this.offset -= 1;
+    else if (matchesKey(input, Key.home) || input === "g") this.offset = 0;
+    else if (matchesKey(input, Key.end) || input === "G") this.offset = this.maxOffset;
+    else return;
+    this.offset = Math.min(Math.max(0, this.offset), this.maxOffset);
+  }
+  render(width: number): string[] {
+    if (width < 1) return [];
+    const body = this.bodyLines(width);
+    const rows = this.rows();
+    const max = Math.max(0, body.length - rows);
+    this.maxOffset = max;
+    this.offset = Math.min(Math.max(0, this.offset), max);
+    const entries = this.entries.length;
+    const meta = entries
+      ? `${entries} entries · rows ${this.offset + 1}-${Math.min(body.length, this.offset + rows)}/${body.length}`
+      : "No transcript entries saved yet.";
+    const lines = [truncateToWidth(this.theme.fg("accent", this.theme.bold(this.title)), width), truncateToWidth(this.theme.fg("muted", meta), width)];
+    if (this.source.notice) lines.push(truncateToWidth(this.theme.fg("warning", this.source.notice), width));
+    const visible = body.slice(this.offset, this.offset + rows);
+    if (!visible.length) lines.push(truncateToWidth(this.theme.fg("dim", "This run has not written any messages yet."), width));
+    lines.push(...visible);
+    lines.push(truncateToWidth(this.theme.fg("dim", "pgup/pgdn scroll · home/end jump · esc back"), width));
+    return lines.map((line) => truncateToWidth(line, width));
+  }
+  private rows(): number { return Math.max(3, this.maxRows); }
+  private bodyLines(width: number): string[] {
+    if (this.cache && this.cache.width === width && this.cache.text === this.source.text) return this.cache.lines;
+    const inner = Math.max(1, width - 2);
+    const lines: string[] = [];
+    for (const entry of this.entries) {
+      const { label, body } = describeEntry(entry, this.theme);
+      lines.push(truncateToWidth(label, width));
+      for (const raw of body.split("\n")) {
+        for (const wrapped of wrapTextWithAnsi(raw || " ", inner)) lines.push(truncateToWidth(`  ${wrapped}`, width));
+      }
+      lines.push("");
+    }
+    if (lines.length) lines.pop();
+    this.cache = { width, text: this.source.text, lines };
+    return lines;
+  }
 }

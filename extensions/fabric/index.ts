@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, renameSync, openSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync, openSync, closeSync } from "node:fs";
 import { clean, publishActivity, readActivity, readPreview } from "./activity.ts";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { LiveTeamInspectorOverlay, renderCompactFabricWidget, renderComparisonResultCard, type FabricAgentView, type FabricTheme, type ComparisonResult } from "./ui.ts";
+import { LiveTeamInspectorOverlay, renderComparisonResultCard, TranscriptViewerOverlay, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptSource } from "./ui.ts";
 import { Type, type Static } from "typebox";
 
 type AgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
@@ -27,6 +27,10 @@ type FabricAgent = {
   startedAt?: string;
   finishedAt?: string;
   pid?: number;
+  /** Directory holding this run's saved session JSONL. */
+  sessionDir?: string;
+  /** Saved session file; the full-run viewer replays it. */
+  sessionPath?: string;
   resultPath?: string;
   patchPath?: string;
   baseCommit?: string;
@@ -66,6 +70,49 @@ function fabricDir(rootId: string) { return join(tmpdir(), "pi-fabric", rootId);
 function statePath(rootId: string) { return join(fabricDir(rootId), "state.json"); }
 function lockPath(rootId: string) { return join(fabricDir(rootId), ".lock"); }
 function outputDir(rootId: string) { return join(fabricDir(rootId), "outputs"); }
+function sessionsDir(rootId: string) { return join(fabricDir(rootId), "sessions"); }
+
+/** A finished run leaves the live views this long after `finishedAt`. */
+export const PRUNE_AFTER_MS = 5 * 60_000;
+/** Upper bound for a replayed transcript; the saved file keeps everything. */
+export const TRANSCRIPT_LIMIT = 4_000_000;
+
+/**
+ * Pi names saved sessions `<timestamp>_<session-id>.jsonl`, so the file for a run
+ * is found by suffix rather than by a predictable name. Newest match wins.
+ */
+export function resolveSessionFile(dir: string, agentId: string): string | undefined {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(`_${agentId}.jsonl`))
+      .sort()
+      .map((name) => join(dir, name))
+      .at(-1);
+  } catch { return undefined; }
+}
+
+/** True when a terminal agent is older than the prune window; display-only. */
+export function isPruned(agent: { status: AgentStatus; finishedAt?: string }, now = Date.now(), pruneAfterMs = PRUNE_AFTER_MS): boolean {
+  if (!terminal(agent.status) || !agent.finishedAt) return false;
+  const finished = Date.parse(agent.finishedAt);
+  return Number.isFinite(finished) && now - finished > pruneAfterMs;
+}
+
+/** Agents the live views list: everything except runs pruned from the pane. */
+export function visibleAgents<T extends { status: AgentStatus; finishedAt?: string }>(agents: T[], now = Date.now(), pruneAfterMs = PRUNE_AFTER_MS): T[] {
+  return agents.filter((agent) => !isPruned(agent, now, pruneAfterMs));
+}
+
+/** Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer. */
+export function readTranscript(path: string, limit = TRANSCRIPT_LIMIT): TranscriptSource {
+  try {
+    const text = readFileSync(path, "utf8");
+    if (text.length <= limit) return { text };
+    return { text: text.slice(0, limit), notice: `Transcript truncated to the first ${limit} characters; ${path} keeps the whole run.` };
+  } catch (error) {
+    return { text: "", notice: `Unable to read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
 
 export type ConfigResolution = { config: FabricConfig; path?: string; source: "env" | "user" | "legacy" | "default" };
 
@@ -172,8 +219,13 @@ function shell(command: string, args: string[], cwd?: string, env?: NodeJS.Proce
   return execFileSync(command, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-export function buildChildArgs(entryPath: string, model: string, instruction: string): string[] {
-  return ["-p", "--no-session", "--approve", "--no-extensions", "--extension", entryPath, "--model", model, "--", instruction];
+/**
+ * Children keep a real session so the parent can replay the whole run. Without a
+ * session directory the run stays ephemeral (`--no-session`).
+ */
+export function buildChildArgs(entryPath: string, model: string, instruction: string, session?: { dir: string; id: string }): string[] {
+  const persistence = session ? ["--session-dir", session.dir, "--session-id", session.id] : ["--no-session"];
+  return ["-p", ...persistence, "--approve", "--no-extensions", "--extension", entryPath, "--model", model, "--", instruction];
 }
 
 /** Capture every working-tree change relative to the launch commit without touching the worker's real index. */
@@ -208,12 +260,15 @@ function startQueued(rootId: string): void {
     const active = Object.values(state.agents).filter((agent) => agent.status === "running").length;
     const capacity = Math.max(0, state.config.maxActiveAgents - active);
     const selected = Object.values(state.agents).filter((agent) => agent.status === "queued").slice(0, capacity);
+    const sessionDir = sessionsDir(rootId);
+    if (selected.length) mkdirSync(sessionDir, { recursive: true });
     for (const agent of selected) {
       try {
         mkdirSync(join(fabricDir(rootId), "worktrees"), { recursive: true });
         const branch = `pi-fabric/${rootId.slice(0, 8)}/${agent.id.slice(0, 8)}`;
         agent.baseCommit = shell("git", ["rev-parse", "HEAD"], state.repo).trim();
         shell("git", ["worktree", "add", "-b", branch, agent.worktree, agent.baseCommit], state.repo);
+        agent.sessionDir = sessionDir;
         agent.status = "running";
         agent.startedAt = new Date().toISOString();
       } catch (error) {
@@ -236,7 +291,7 @@ function startQueued(rootId: string): void {
       "Finish with a concise result packet: findings, changes, tests run, risks, and recommendation.",
     ].join("\n");
     const stderr = openSync(join(outputDir(rootId), `${agent.id}.stderr.log`), "a");
-    const child = spawn(piBin, buildChildArgs(ENTRY_PATH, agent.model, instruction), {
+    const child = spawn(piBin, buildChildArgs(ENTRY_PATH, agent.model, instruction, agent.sessionDir ? { dir: agent.sessionDir, id: agent.id } : undefined), {
       cwd: agent.worktree,
       detached: true,
       stdio: ["ignore", "ignore", stderr],
@@ -261,7 +316,7 @@ function startQueued(rootId: string): void {
     withLock(rootId, () => {
       const state = loadState(rootId);
       const stored = state.agents[agent.id];
-      if (stored) { stored.pid = child.pid; saveState(rootId, state); }
+      if (stored) { stored.pid = child.pid; stored.sessionPath = stored.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agent.id); saveState(rootId, state); }
     });
   }
 }
@@ -269,8 +324,8 @@ function startQueued(rootId: string): void {
 function directChildren(state: FabricState, parentId?: string): FabricAgent[] {
   return Object.values(state.agents).filter((agent) => agent.parentId === parentId);
 }
-function treeLines(state: FabricState, parentId: string | undefined, theme?: { fg: (color: "success" | "error" | "warning" | "accent" | "muted" | "dim", text: string) => string }, indent = ""): string[] {
-  const children = directChildren(state, parentId);
+function treeLines(state: FabricState, parentId: string | undefined, theme?: { fg: (color: "success" | "error" | "warning" | "accent" | "muted" | "dim", text: string) => string }, indent = "", include: (agent: FabricAgent) => boolean = () => true): string[] {
+  const children = directChildren(state, parentId).filter(include);
   const lines: string[] = [];
   for (const [index, agent] of children.entries()) {
     const last = index === children.length - 1;
@@ -278,7 +333,7 @@ function treeLines(state: FabricState, parentId: string | undefined, theme?: { f
     const color = agent.status === "done" ? "success" : agent.status === "error" || agent.status === "cancelled" ? "error" : agent.status === "running" ? "accent" : "warning";
     const line = `${indent}${last ? "└─" : "├─"} ${icon} ${agent.label} ${short(agent.id)}  ${agent.model}  ${agent.status}`;
     lines.push(theme ? theme.fg(color, line) : line);
-    lines.push(...treeLines(state, agent.id, theme, `${indent}${last ? "   " : "│  "}`));
+    lines.push(...treeLines(state, agent.id, theme, `${indent}${last ? "   " : "│  "}`, include));
   }
   return lines;
 }
@@ -292,13 +347,32 @@ function resultText(agent: FabricAgent): string {
   return readFileSync(agent.resultPath, "utf8");
 }
 
+/** Draws a full-window overlay body inside the same frame the inspector uses. */
+function framedOverlayLines(theme: { fg: (color: any, text: string) => string; bg: (color: any, text: string) => string }, width: number, body: readonly string[]): string[] {
+  const inner = Math.max(1, width - 4);
+  const border = theme.fg("borderAccent", "─".repeat(Math.max(0, width - 2)));
+  const row = (line: string) => {
+    const clipped = truncateToWidth(line, inner);
+    return truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "│") + " " + clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))) + " " + theme.fg("borderAccent", "│")), width);
+  };
+  return [
+    truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "┌") + border + theme.fg("borderAccent", "┐")), width),
+    row(""),
+    ...body.map(row),
+    row(""),
+    truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "└") + border + theme.fg("borderAccent", "┘")), width),
+  ];
+}
+
 export default function piFabric(pi: ExtensionAPI) {
   // Resolve once per process. An explicitly selected, unreadable, or malformed config is fatal instead of silently changing policy.
   const configResolution = resolveConfig();
   if (configResolution.source === "env" && configResolution.path) process.env.PI_FABRIC_CONFIG = configResolution.path;
   let rootId = process.env[ROOT_ENV] ?? "";
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  let widgetVisible = true;
+  let statusVisible = true;
+  // Fabric no longer renders a widget; clear one left by an older load of this extension.
+  let widgetCleared = false;
   const recorded = new Set<string>();
 
   function views(agents: FabricAgent[], includePatch = false): FabricAgentView[] {
@@ -357,13 +431,16 @@ export default function piFabric(pi: ExtensionAPI) {
   }
   function updateUI(ctx: ExtensionContext): void {
     if (ctx.mode !== "tui" || activeAgentId()) return;
-    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setWidget("pi-fabric", undefined); ctx.ui.setStatus("pi-fabric", undefined); return; }
+    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setStatus("pi-fabric", undefined); return; }
     const state = loadState(rootId);
     const agents = Object.values(state.agents);
-    ctx.ui.setStatus("pi-fabric", ctx.ui.theme.fg("accent", `◆ fabric ${summary(state).split(" · ")[0]}`));
-    const data = views(agents).sort((a, b) => Number(terminal(a.status)) - Number(terminal(b.status)));
-    if (widgetVisible && agents.length) ctx.ui.setWidget("pi-fabric", (_tui, theme) => ({ invalidate() {}, render: (width) => renderCompactFabricWidget({ agents: data, maxAgents: 4 }, theme, width) }), { placement: "aboveEditor" });
-    else ctx.ui.setWidget("pi-fabric", undefined);
+    if (!widgetCleared) { ctx.ui.setWidget("pi-fabric", undefined); widgetCleared = true; }
+    // The status line is the only persistent Fabric surface; finished runs leave it after the prune window.
+    const archived = agents.length - visibleAgents(agents).length;
+    const running = summary(state).split(" · ")[0];
+    const label = archived ? `◆ fabric ${running} · ${archived} archived` : `◆ fabric ${running}`;
+    ctx.ui.setStatus("pi-fabric", statusVisible && agents.length ? ctx.ui.theme.fg("accent", label) : undefined);
+    // Result entries are recorded for every run, including ones already pruned from the views.
     for (const agent of agents) {
       if (!terminal(agent.status) || recorded.has(agent.id)) continue;
       recorded.add(agent.id);
@@ -372,6 +449,20 @@ export default function piFabric(pi: ExtensionAPI) {
   }
   pi.registerEntryRenderer<{ agents: FabricAgentView[] }>("pi-fabric-result", (entry, options, theme) => comparison(entry.data?.agents ?? [], theme, options.expanded, "◆ FABRIC · Saved result"));
   function activeAgentId(): string | undefined { return process.env[AGENT_ENV]; }
+  /** Records the child's own session file (authoritative, available before it finishes). */
+  function rememberSessionPath(root: string, agentId: string, sessionPath?: string): void {
+    if (!sessionPath) return;
+    try {
+      withLock(root, () => {
+        const state = loadState(root);
+        const agent = state.agents[agentId];
+        if (!agent || agent.sessionPath === sessionPath) return;
+        agent.sessionPath = sessionPath;
+        agent.sessionDir = dirname(sessionPath);
+        saveState(root, state);
+      });
+    } catch { /* Best effort: a missing root or a busy lock only delays the transcript link; the run is unaffected. */ }
+  }
   function cancelTree(root: string, agentId: string): string[] {
     const cancelled = withLock(root, () => {
       const state = loadState(root); const rootAgent = state.agents[agentId];
@@ -398,6 +489,9 @@ export default function piFabric(pi: ExtensionAPI) {
       if (entry.customType === "pi-fabric-root" && !activeAgentId() && data?.rootId && existsSync(statePath(data.rootId))) rootId = data.rootId;
       if (entry.customType === "pi-fabric-result" && data?.agentId) recorded.add(data.agentId);
     }
+    // A child records its own saved session immediately, so the parent can replay a run that is still working.
+    const childId = activeAgentId();
+    if (rootId && childId) rememberSessionPath(rootId, childId, ctx.sessionManager.getSessionFile?.());
     if (!rootId) return;
     updateUI(ctx); startRefresh(ctx);
   });
@@ -444,6 +538,9 @@ export default function piFabric(pi: ExtensionAPI) {
       const lastAssistant = [...messages].reverse().find((entry) => entry.message?.role === "assistant")?.message;
       const response = lastAssistant?.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "(Agent settled without a text response.)";
       mkdirSync(outputDir(rootId), { recursive: true });
+      // Settling is the last chance for a child to link its saved transcript.
+      agent.sessionPath = ctx.sessionManager.getSessionFile?.() ?? agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agentId);
+      if (agent.sessionPath) agent.sessionDir = dirname(agent.sessionPath);
       agent.resultPath = join(outputDir(rootId), `${agentId}.md`);
       agent.patchPath = join(outputDir(rootId), `${agentId}.patch`);
       writeFileSync(agent.resultPath, response);
@@ -529,7 +626,10 @@ export default function piFabric(pi: ExtensionAPI) {
       const root = ensureRoot(ctx); const state = loadState(root);
       const selected = params.agentIds ? params.agentIds.map((id) => state.agents[id]).filter((agent): agent is FabricAgent => Boolean(agent)) : Object.values(state.agents);
       const body = params.includeResults ? selected.map((agent) => `## ${agent.label} — ${agent.status}\n${resultText(agent)}`).join("\n\n") : [summary(state), ...treeLines(state, undefined)].join("\n");
-      return { content: [{ type: "text", text: body || "Fabric has no delegated agents yet." }], details: { rootId: root, agents: selected } };
+      // Pruning only hides finished runs from the live /team views; forensics stay complete here.
+      const archived = Object.values(state.agents).filter((agent) => isPruned(agent)).length;
+      const note = archived ? `\n\n${archived} finished agent(s) are hidden from the live /team views (pruned ${PRUNE_AFTER_MS / 60_000} minutes after finishing). They stay listed here and their transcripts stay on disk.` : "";
+      return { content: [{ type: "text", text: (body || "Fabric has no delegated agents yet.") + note }], details: { rootId: root, agents: selected } };
     },
   });
 
@@ -546,45 +646,93 @@ export default function piFabric(pi: ExtensionAPI) {
     description: "Show the Pi Fabric recursive agent team dashboard",
     handler: async (args, ctx) => {
       const root = ensureRoot(ctx);
-      if (args.trim() === "hide" || args.trim() === "show") {
-        widgetVisible = args.trim() === "show"; updateUI(ctx); return;
+      const command = args.trim();
+      if (command === "hide" || command === "show") { statusVisible = command === "show"; updateUI(ctx); return; }
+      if (command === "status") { updateUI(ctx); ctx.ui.notify(summary(loadState(root)), "info"); return; }
+      const match = command.match(/^cancel\s+(.+)$/);
+      if (match) { const cancelled = cancelTree(root, match[1]); updateUI(ctx); ctx.ui.notify(`Cancelled ${cancelled.length} Fabric agent(s).`, "info"); return; }
+      if (command && command !== "all") {
+        ctx.ui.notify("Usage: /team | /team all | /team status | /team hide | /team show | /team cancel <agent-id>", "info");
+        return;
       }
-      if (args.trim() === "status") { updateUI(ctx); ctx.ui.notify(summary(loadState(root)), "info"); return; }
-      if (!args.trim()) {
-        const state = loadState(root); updateUI(ctx);
-        if (ctx.mode !== "tui") { ctx.ui.notify([summary(state), ...treeLines(state, undefined)].join("\n"), "info"); return; }
+      // Pruning is display-only: `all` (or `a` in the inspector) lists finished runs from the same state file.
+      let showAll = command === "all";
+      updateUI(ctx);
+      const listed = () => {
+        const agents = Object.values(loadState(root).agents);
+        return showAll ? agents : visibleAgents(agents);
+      };
+      if (ctx.mode !== "tui") {
+        const state = loadState(root);
+        ctx.ui.notify([summary(state), ...treeLines(state, undefined, undefined, "", (agent) => showAll || !isPruned(agent))].join("\n"), "info");
+        return;
+      }
+
+      /** Opens the full-window replay of a run's saved session. */
+      const openTranscript = async (agentId: string) => {
+        const agent = loadState(root).agents[agentId];
+        const sessionPath = agent?.sessionPath ?? resolveSessionFile(sessionsDir(root), agentId);
+        if (!agent || !sessionPath || !existsSync(sessionPath)) {
+          ctx.ui.notify("This run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
+          return;
+        }
         let timer: ReturnType<typeof setInterval> | undefined;
         try {
           await ctx.ui.custom((tui, theme, _keys, done) => {
-            const data = () => ({ agents: views(Object.values(loadState(root).agents), true), maxRows: Math.max(3, Math.floor(tui.terminal.rows * 0.8) - 10) });
-            const inspector = new LiveTeamInspectorOverlay({ theme, data: data(), onChange: () => tui.requestRender(), onClose: () => done(undefined) });
-            timer = setInterval(() => { try { inspector.setData(data()); } catch { /* Keep last valid snapshot. */ } }, 750);
+            const heading = (current: typeof agent) => `${current.label} · ${short(current.id)} · ${current.model} · ${current.status}`;
+            const viewer = new TranscriptViewerOverlay({
+              theme,
+              title: heading(agent),
+              read: () => readTranscript(sessionPath),
+              maxRows: Math.max(3, tui.terminal.rows - 6),
+              onClose: () => done(undefined),
+            });
+            timer = setInterval(() => {
+              try {
+                const current = loadState(root).agents[agentId];
+                if (current) viewer.setTitle(heading(current));
+                if (viewer.refresh()) tui.requestRender();
+              } catch { /* Keep the last transcript that rendered. */ }
+            }, 1000);
+            return {
+              invalidate: () => viewer.invalidate(),
+              handleInput: (input: string) => viewer.handleInput(input),
+              render: (width: number) => framedOverlayLines(theme, width, viewer.render(Math.max(1, width - 4))),
+            };
+          }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
+        } finally { if (timer) clearInterval(timer); }
+      };
+
+      // Esc in the transcript returns to the inspector; Esc there closes the dashboard.
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        while (true) {
+          const chosen = await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+            const data = () => ({
+              agents: views(listed(), true),
+              maxRows: Math.max(3, Math.floor(tui.terminal.rows * 0.8) - 10),
+              title: showAll ? "◆ PI FABRIC — live team · all runs" : "◆ PI FABRIC — live team",
+            });
+            const inspector = new LiveTeamInspectorOverlay({
+              theme,
+              data: data(),
+              onChange: () => tui.requestRender(),
+              onClose: () => done(undefined),
+              onOpen: (agent) => done(agent.id),
+              onToggleFilter: () => { showAll = !showAll; inspector.setData(data()); tui.requestRender(); },
+            });
+            timer = setInterval(() => { try { inspector.setData(data()); tui.requestRender(); } catch { /* Keep last valid snapshot. */ } }, 750);
             return {
               invalidate: () => inspector.invalidate(),
               handleInput: (input: string) => inspector.handleInput(input),
-              render: (width: number) => {
-                const inner = Math.max(1, width - 4);
-                const border = theme.fg("borderAccent", "─".repeat(Math.max(0, width - 2)));
-                const frame = (line: string) => {
-                  const clipped = truncateToWidth(line, inner);
-                  return truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "│") + " " + clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))) + " " + theme.fg("borderAccent", "│")), width);
-                };
-                return [
-                  truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "┌") + border + theme.fg("borderAccent", "┐")), width),
-                  frame(""),
-                  ...inspector.render(inner).map(frame),
-                  frame(""),
-                  truncateToWidth(theme.bg("customMessageBg", theme.fg("borderAccent", "└") + border + theme.fg("borderAccent", "┘")), width),
-                ];
-              },
+              render: (width: number) => framedOverlayLines(theme, width, inspector.render(Math.max(1, width - 4))),
             };
           }, { overlay: true, overlayOptions: { width: "95%", maxHeight: "90%" } });
-        } finally { if (timer) clearInterval(timer); }
-        return;
-      }
-      const match = args.trim().match(/^cancel\s+(.+)$/);
-      if (match) { const cancelled = cancelTree(root, match[1]); updateUI(ctx); ctx.ui.notify(`Cancelled ${cancelled.length} Fabric agent(s).`, "info"); return; }
-      ctx.ui.notify("Usage: /team | /team status | /team hide | /team show | /team cancel <agent-id>", "info");
+          if (timer) { clearInterval(timer); timer = undefined; }
+          if (!chosen) return;
+          await openTranscript(chosen);
+        }
+      } finally { if (timer) clearInterval(timer); }
     },
   });
 }

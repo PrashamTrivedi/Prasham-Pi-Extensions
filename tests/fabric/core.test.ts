@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, reconcileRootConfig, requestedRule, resolveConfig, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { buildChildArgs, capturePatch, effectiveRule, isPruned, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, visibleAgents, PRUNE_AFTER_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -69,11 +69,61 @@ test("a restored root adopts an edited hierarchy and keeps its agents", () => {
   expect(updated).toMatchObject({ rootId: "root", repo: "/repo", createdAt: "t", agents: {} });
 });
 
-test("child args disable discovery and explicitly load the exact Fabric entry", () => {
+test("child args persist a session the parent can replay, and stay ephemeral without one", () => {
   const entry = resolve("some/project/node_modules/pkg/extensions/fabric/index.ts");
-  const args = buildChildArgs(entry, "provider/model", "do work");
-  expect(args).toEqual(["-p", "--no-session", "--approve", "--no-extensions", "--extension", entry, "--model", "provider/model", "--", "do work"]);
+  const args = buildChildArgs(entry, "provider/model", "do work", { dir: "/tmp/sessions", id: "agent-1" });
+  expect(args).toEqual(["-p", "--session-dir", "/tmp/sessions", "--session-id", "agent-1", "--approve", "--no-extensions", "--extension", entry, "--model", "provider/model", "--", "do work"]);
   expect(args.filter(value => value === "--extension")).toHaveLength(1);
+  expect(args).not.toContain("--no-session");
+  expect(buildChildArgs(entry, "provider/model", "do work")).toContain("--no-session");
+});
+
+test("a run's saved session is found by id suffix, newest first, and a missing dir is harmless", () => {
+  const dir = temp();
+  writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_older.jsonl"), "{}");
+  writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_agent-a.jsonl"), "{\"old\":true}");
+  writeFileSync(join(dir, "2026-01-02T00-00-00-000Z_agent-a.jsonl"), "{\"new\":true}");
+  writeFileSync(join(dir, "2026-01-03T00-00-00-000Z_agent-ab.jsonl"), "{}");
+  expect(resolveSessionFile(dir, "agent-a")).toBe(join(dir, "2026-01-02T00-00-00-000Z_agent-a.jsonl"));
+  expect(resolveSessionFile(dir, "missing")).toBeUndefined();
+  expect(resolveSessionFile(join(dir, "nope"), "agent-a")).toBeUndefined();
+});
+
+test("finished runs leave the live views five minutes after finishing, and stay readable", () => {
+  const now = Date.parse("2026-01-01T12:00:00.000Z");
+  const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+  expect(PRUNE_AFTER_MS).toBe(5 * 60_000);
+  expect(isPruned({ status: "done", finishedAt: at(6) }, now)).toBe(true);
+  expect(isPruned({ status: "done", finishedAt: at(4) }, now)).toBe(false);
+  expect(isPruned({ status: "error", finishedAt: at(5) }, now)).toBe(false);
+  expect(isPruned({ status: "cancelled", finishedAt: at(9) }, now)).toBe(true);
+  // Running and queued runs never prune, even with a stale timestamp.
+  expect(isPruned({ status: "running", finishedAt: at(90) }, now)).toBe(false);
+  expect(isPruned({ status: "done" }, now)).toBe(false);
+  const agents = [
+    { id: "old", status: "done" as const, finishedAt: at(6) },
+    { id: "fresh", status: "done" as const, finishedAt: at(1) },
+    { id: "busy", status: "running" as const, finishedAt: at(60) },
+  ];
+  expect(visibleAgents(agents, now).map(agent => agent.id)).toEqual(["fresh", "busy"]);
+  expect(visibleAgents(agents, now, 120 * 60_000).map(agent => agent.id)).toEqual(["old", "fresh", "busy"]);
+  // Pruning is display-only, so the state itself is untouched.
+  expect(agents).toHaveLength(3);
+});
+
+test("transcript reads are bounded and explain truncation or failure", () => {
+  const dir = temp();
+  const small = join(dir, "small.jsonl");
+  writeFileSync(small, "{\"type\":\"session\"}\n");
+  expect(readTranscript(small)).toEqual({ text: "{\"type\":\"session\"}\n" });
+  const large = join(dir, "large.jsonl");
+  writeFileSync(large, "x".repeat(50));
+  const truncated = readTranscript(large, 10);
+  expect(truncated.text).toHaveLength(10);
+  expect(truncated.notice).toContain("truncated");
+  const missing = readTranscript(join(dir, "missing.jsonl"));
+  expect(missing.text).toBe("");
+  expect(missing.notice).toContain("Unable to read");
 });
 
 test("patch capture includes committed and untracked changes without changing the worker index", () => {
