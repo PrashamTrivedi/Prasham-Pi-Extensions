@@ -290,8 +290,6 @@ export class TranscriptPane {
   get id(): string { return this.spec.id; }
   get label(): string { return this.spec.label; }
   get hue(): number { return this.spec.hue; }
-  /** Replaces the agent this pane shows (the same pane is reused across opens). */
-  setSpec(spec: TranscriptPaneSpec): void { (this.spec as { hue: number }).hue = spec.hue; }
   invalidate(): void { this.cache = undefined; }
   /** Sizes the body so header + rule + body fills `height` lines exactly. */
   setHeight(height: number): void { this.maxRows = Math.max(3, Math.floor(height) - 2); }

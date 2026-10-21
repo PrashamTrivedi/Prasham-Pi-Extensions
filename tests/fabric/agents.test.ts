@@ -66,6 +66,8 @@ test("one spawn call with several agents becomes a single group row that opens s
   expect(group.label).toBe("2 agents");
   expect(group.status).toBe("running");
   expect(group.collapsed).toBe(true);
+  // A collapsed row names what it hides.
+  expect(renderAgentRows(rows, theme, 120)[1]).toContain("2 hidden");
   // `/agents` expands it on demand.
   const expanded = buildTree({ main, agents, expandedGroups: new Set(["group:call-1"]) });
   expect(expanded.map((row) => [row.kind, row.id, row.depth])).toEqual([

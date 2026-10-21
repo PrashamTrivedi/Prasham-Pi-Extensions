@@ -524,7 +524,8 @@ export default function piFabric(pi: ExtensionAPI) {
       sources.push({ id, path, cursor: Buffer.byteLength(initial.text.slice(0, initial.text.lastIndexOf("\n") + 1), "utf8"), done: Boolean(initial.notice) });
     }
     if (!specs.length) {
-      ctx.ui.notify(idOrIds(wanted) === "main" ? "The main chat has no saved session in this run." : "That run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
+      const mainOnly = wanted.length === 1 && wanted[0] === "main";
+      ctx.ui.notify(mainOnly ? "The main chat has no saved session in this run." : "That run has no saved transcript yet. Fabric saves one when the child starts working.", "warning");
       return;
     }
     if (ctx.mode !== "tui") {
@@ -609,8 +610,6 @@ export default function piFabric(pi: ExtensionAPI) {
       await showTranscript(ctx, chosen.kind === "group" ? (chosen.members ?? []) : [chosen.id]);
     }
   }
-
-  function idOrIds(ids: readonly string[]): string { return ids.join(","); }
 
   /**
    * Runs a full-window screen with the rows widget hidden. Pi lays widgets out

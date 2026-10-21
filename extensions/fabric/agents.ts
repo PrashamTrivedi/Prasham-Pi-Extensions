@@ -245,8 +245,10 @@ export interface RowsRenderOptions {
 export function renderAgentRow(row: AgentRow, theme: FabricTheme, width: number, options: { cursor?: boolean; last?: boolean } = {}): string {
   const marker = row.kind === "main" ? "◆" : row.kind === "group" ? (row.collapsed ? "▸" : "▾") : statusIcon[row.status];
   const name = row.kind === "main" ? theme.fg("accent", theme.bold("main")) : paintAgent(theme, row.hue, row.label);
+  // A collapsed row says what it is hiding, so nothing disappears silently.
+  const collapsedHint = row.collapsed && row.hiddenChildren ? `${row.hiddenChildren} hidden` : undefined;
   const detail = (row.kind === "group" ? [row.activity, row.status] : [row.model, row.activity])
-    .concat(formatElapsed(row.elapsedMs))
+    .concat(formatElapsed(row.elapsedMs), collapsedHint)
     .filter((part) => Boolean(part))
     .join(" · ");
   const branch = row.depth === 0 ? "" : `${"│  ".repeat(Math.max(0, row.depth - 1))}${options.last ? "└─" : "├─"} `;
