@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type Verdict = "allow" | "confirm" | "deny";
 
@@ -11,8 +12,25 @@ export interface PolicyConfig {
   /** Maximum supervised continuation turns for an anchored outcome. */
   budget: number;
   bash: { deny: string[]; confirm: string[] };
-  paths: { deny: string[]; confirmOutsideCwd: boolean };
+  paths: {
+    deny: string[];
+    /** Roots where a write/edit needs no confirmation. Only relaxes `confirm`; `deny` still applies. */
+    writeAllowRoots: string[];
+  };
   tools: { deny: string[]; confirm: string[] };
+}
+
+/**
+ * Write roots that skip the confirmation tier: the Pi agent directory (skills, sessions, project
+ * memory) and `/tmp`, plus anything a user adds through `PI_SANDBOX_ALLOW_ROOTS` (path-separator
+ * delimited). Non-absolute entries are ignored: a relative root would depend on the process cwd.
+ */
+export function writeAllowRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  const extra = (env.PI_SANDBOX_ALLOW_ROOTS ?? "")
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.startsWith("/") || entry.startsWith("~"));
+  return [join(homedir(), ".pi", "agent"), "/tmp", ...extra];
 }
 
 export interface PolicyCall {
@@ -31,30 +49,25 @@ export const DEFAULT_CONFIG: PolicyConfig = {
   budget: 8,
   bash: {
     deny: ["rm -rf /", "sudo rm", "git push --force", "git push -f", "mkfs", ":(){:|:&};:"],
+    // Genuinely destructive or shared-state commands only. Installs and network calls are left to
+    // the Jev shell-safety pass-2, which judges them contextually instead of prompting blindly.
     confirm: [
       "git push",
       "git reset --hard",
       "rm -rf",
-      "rm -r ",
+      "rm -r",
       "sudo",
       "chmod",
       "chown",
-      "curl",
-      "wget",
       "npm publish",
-      "npm install",
-      "npm i ",
-      "bun add",
-      "pnpm add",
-      "yarn add",
-      "brew",
-      "apt-get",
-      "docker",
+      "pnpm publish",
+      "yarn publish",
+      "bun publish",
     ],
   },
   paths: {
     deny: [".env", ".ssh", "id_rsa", "id_ed25519", ".aws", ".npmrc", ".netrc", ".git-credentials"],
-    confirmOutsideCwd: true,
+    writeAllowRoots: writeAllowRoots(),
   },
   tools: { deny: [], confirm: [] },
 };
@@ -89,6 +102,42 @@ export function matchPattern(value: string, pattern: string): boolean {
     }
   }
   return value.toLowerCase().includes(pattern.toLowerCase());
+}
+
+/**
+ * Token-boundary match for shell commands (case-insensitive). A slash-delimited pattern stays a
+ * regex; a literal pattern is escaped, its whitespace runs match any whitespace, and both ends must
+ * land on a boundary, so a pattern that is only part of a token (`curly`, `git pushy`, `rm -r`
+ * inside `rm -rf`) stops matching. A whole-word mention (`grep curl`) still matches — the noise is
+ * gone because those commands left the confirm list, not because mention detection is perfect.
+ */
+export function matchCommand(value: string, pattern: string): boolean {
+  if (pattern.length > 1 && pattern.startsWith("/") && pattern.endsWith("/")) {
+    try {
+      return new RegExp(pattern.slice(1, -1), "i").test(value);
+    } catch {
+      return false;
+    }
+  }
+  const trimmed = pattern.trim();
+  if (!trimmed) return false;
+  const body = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  try {
+    return new RegExp(`(?<![\\w./-])${body}(?![\\w/-])`, "i").test(value);
+  } catch {
+    return false;
+  }
+}
+
+/** True when `rawPath` resolves under one of `roots` (tilde paths resolve against the home dir). */
+export function isUnderAnyRoot(rawPath: string, roots: readonly string[], cwd: string): boolean {
+  if (!rawPath) return false;
+  const target = resolve(cwd, rawPath.startsWith("~") ? join(homedir(), rawPath.slice(1)) : rawPath);
+  return roots.some((root) => {
+    const base = resolve(root.startsWith("~") ? join(homedir(), root.slice(1)) : root);
+    const rel = relative(base, target);
+    return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  });
 }
 
 /** True when `rawPath` resolves outside `cwd` (tilde paths count as outside). */
@@ -128,7 +177,7 @@ export function classifyToolCall(call: PolicyCall, cwd: string, config: PolicyCo
     if (denied) {
       return { verdict: "deny", reason: `command matches denied pattern "${denied}"`, flags: [`bash-deny:${denied}`] };
     }
-    const confirm = rules.bash.confirm.find((pattern) => matchPattern(command, pattern));
+    const confirm = rules.bash.confirm.find((pattern) => matchCommand(command, pattern));
     if (confirm) {
       return {
         verdict: "confirm",
@@ -146,10 +195,14 @@ export function classifyToolCall(call: PolicyCall, cwd: string, config: PolicyCo
         return { verdict: "deny", reason: `path matches protected pattern "${pattern}"`, flags: [`path-deny:${pattern}`] };
       }
     }
-    if (rules.paths.confirmOutsideCwd && raw && isOutsideCwd(raw, cwd)) {
+    // Reads are non-mutating, so the protected-path denies above are the only read restriction.
+    if (MUTATING_TOOLS.has(call.toolName) && raw) {
+      if (!isOutsideCwd(raw, cwd) || isUnderAnyRoot(raw, rules.paths.writeAllowRoots, cwd)) {
+        return { verdict: "allow", reason: "path is inside the working directory or an allowed root", flags: [] };
+      }
       return { verdict: "confirm", reason: "path is outside the working directory", flags: ["path-outside-cwd"] };
     }
-    return { verdict: "allow", reason: "path inside the working directory", flags: [] };
+    return { verdict: "allow", reason: "read outside the working directory is unrestricted", flags: [] };
   }
 
   return { verdict: "allow", reason: "tool not covered by policy", flags: [] };

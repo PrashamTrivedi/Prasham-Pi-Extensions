@@ -114,6 +114,44 @@ describe("permission floor", () => {
   });
 });
 
+describe("policy counters", () => {
+  test("/dev-status reports confirm-tier calls and Jev auto-approvals, and /dev-reset clears them", async () => {
+    const { hooks, commands, notifications, ctx } = harness(process.cwd(), {
+      hasUI: true,
+      confirm: false,
+      jevDecision: async () => ({ gate: { action: "allow", reason: "safe push" } }),
+    });
+    await hooks.get("session_start")!({}, ctx);
+
+    // Shell confirm resolved by Jev: one confirm-tier call, one auto-approval.
+    const pushed = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git push origin main" } }, ctx);
+    expect(pushed).toBeUndefined();
+    // Non-shell confirm still reaches the human, declined here.
+    const declined = await hooks.get("tool_call")!({ toolName: "write", input: { path: "/etc/hosts" } }, ctx);
+    expect(declined?.block).toBe(true);
+
+    notifications.length = 0;
+    await commands.get("dev-status").handler("", ctx);
+    expect(notifications.some((line) => line.includes("policy: 2 confirm(s), 1 auto-approved (Jev)"))).toBe(true);
+
+    await commands.get("dev-reset").handler("", ctx);
+    notifications.length = 0;
+    await commands.get("dev-status").handler("", ctx);
+    expect(notifications.some((line) => line.includes("policy: 0 confirm(s), 0 auto-approved (Jev)"))).toBe(true);
+  });
+
+  test("a read outside the working directory never reaches the human", async () => {
+    const { hooks, confirmCalls, ctx } = harness(process.cwd(), { hasUI: true });
+    await hooks.get("session_start")!({}, ctx);
+    const result = await hooks.get("tool_call")!(
+      { toolName: "read", input: { path: "~/.pi/agent/skills/brainstorm/SKILL.md" } },
+      ctx,
+    );
+    expect(result).toBeUndefined();
+    expect(confirmCalls).toHaveLength(0);
+  });
+});
+
 describe("plan gate (conversational)", () => {
   test("presents the gate in the chat and records nothing", async () => {
     const { cwd, instance } = await armGate("add-widget");

@@ -50,7 +50,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | **Memory** | Gives each project a local Markdown memory (`next_`, `project_`, `feedback_`, `reference_` notes plus an index) and injects the location and protocol so the model reads and writes it with normal file tools | `PI_MEMORY_ROOT` |
 | **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data; renders only while a Workers AI model is active | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
-| **sandbox-dev** | Native plan → approve → implement → verify loop: minimal tool-permission floor, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools |
+| **sandbox-dev** | Native plan → approve → implement → verify loop: minimal tool-permission floor that confirms only destructive commands and writes outside trusted roots, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools, `PI_SANDBOX_ALLOW_ROOTS` |
 
 The herdr-generated integration is intentionally not redistributed. Install herdr's own integration separately.
 
@@ -198,13 +198,13 @@ bun run extensions/sanitize-skill-names.ts --apply
 
 A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
 
-- **Permission floor.** A short allow/confirm/deny policy over `tool_call` and `user_bash`, fail-closed when there is no UI. Patterns are case-insensitive substrings, or `/regex/` when slash-delimited. This is pass 1 only; the shell-safety pass 2 belongs to `extensions/jev` (Phase 5) and may only escalate these verdicts. There is no config file — a project-local file that could zero the `deny` lists would make the floor unenforceable.
+- **Permission floor.** A short allow/confirm/deny policy over `tool_call` and `user_bash`, fail-closed when there is no UI. Patterns are case-insensitive substrings, or `/regex/` when slash-delimited; the `bash.confirm` tier matches on token boundaries and holds only destructive or shared-state commands, while reads never confirm and writes skip the confirm tier inside the working directory, `~/.pi/agent`, `/tmp`, and `PI_SANDBOX_ALLOW_ROOTS`. This is pass 1 only; the shell-safety pass 2 belongs to `extensions/jev` (Phase 5) and may only escalate these verdicts. There is no config file — a project-local file that could zero the `deny` lists would make the floor unenforceable.
 - **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md` from disk and appends the gate to the chat. It records nothing and classifies nothing; the human's reply in the transcript is the record, and the agent reads it. `r` only shows the plan; `/dev-approve` is an explicit human-only approval. The plan review alongside the digest is an ordinary model task, not a Jev judgment.
 - **Single-outcome anchoring.** The plan's `Original Ask` becomes the anchored outcome; the supervisor restates it each turn, enforces a turn budget, and stops when `dev_outcome_met` records raw evidence. Budget exhaustion is tracked separately and is not a satisfied outcome.
 
 ```text
 /dev-approve <task>   # approve a plan and start the implementation
-/dev-status           # show the anchored outcome and turn budget
+/dev-status           # show the anchored outcome, turn budget, and confirm counters
 /dev-reset            # clear the in-session gate and anchor
 ```
 

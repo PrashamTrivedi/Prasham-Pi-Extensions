@@ -102,7 +102,7 @@ describe("shell-confirm Jev routing", () => {
         jevDecision: async () => ({}),
       });
       await hooks.get("session_start")!({}, ctx);
-      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "npm install" } }, ctx);
+      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "sudo ls" } }, ctx);
       expect(result).toBeUndefined();
       expect(notifications.some((line) => line.includes("auto-approved bash") && line.includes("Jev: safe"))).toBe(true);
     } finally {
@@ -167,7 +167,7 @@ describe("shell-confirm Jev routing", () => {
         jevDecision: async () => undefined, // adapter subprocess unavailable
       });
       await hooks.get("session_start")!({}, ctx);
-      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "curl https://example.com" } }, ctx);
+      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git reset --hard origin/main" } }, ctx);
       expect(result).toBeUndefined();
       expect(confirmCalls).toHaveLength(1);
     } finally {
@@ -184,7 +184,7 @@ describe("shell-confirm Jev routing", () => {
       try {
         const { hooks, ctx } = harness(cwd, { hasUI: true, jevDecision: async () => ({}) });
         await hooks.get("session_start")!({}, ctx);
-        await hooks.get("tool_call")!({ toolName: "bash", input: { command: "npm install" }, toolCallId: "call-1" }, ctx);
+        await hooks.get("tool_call")!({ toolName: "bash", input: { command: "rm -rf node_modules" }, toolCallId: "call-1" }, ctx);
         expect(marked).toContain("call-1");
       } finally {
         jev.markShellApprovalHandled = original;

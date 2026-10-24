@@ -60,6 +60,9 @@ export default function sandboxDev(pi: ExtensionAPI) {
   /** Present once the gate is shown; the outcome comes from the plan it read. */
   let pendingAnchor: PlanAnchor | undefined;
   let turnsUsed = 0;
+  /** Pass-1 confirm verdicts this session, and how many Jev auto-resolved instead of the human. */
+  let confirmTier = 0;
+  let autoApproved = 0;
 
   const status = (ctx: ExtensionContext, text: string | undefined) => {
     if (ctx.mode === "tui" || ctx.mode === "rpc") ctx.ui.setStatus(STATUS_KEY, text);
@@ -68,6 +71,9 @@ export default function sandboxDev(pi: ExtensionAPI) {
   const sessionId = (ctx: ExtensionContext): string => {
     try { return ctx.sessionManager.getSessionId(); } catch { return "unknown"; }
   };
+
+  /** The before/after instrument: how much the floor still asks, and how much Jev settles. */
+  const policyLine = () => `policy: ${confirmTier} confirm(s), ${autoApproved} auto-approved (Jev)`;
 
   const renderStatus = (ctx: ExtensionContext) => {
     const active = anchor ?? pendingAnchor;
@@ -130,6 +136,8 @@ export default function sandboxDev(pi: ExtensionAPI) {
     anchor = undefined;
     pendingAnchor = undefined;
     turnsUsed = 0;
+    confirmTier = 0;
+    autoApproved = 0;
     renderStatus(ctx);
   });
 
@@ -162,6 +170,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
       ctx.ui.notify(`sandbox-dev denied ${event.toolName}: ${decision.reason}`, "error");
       return { block: true, reason: `sandbox-dev: ${decision.reason}` };
     }
+    confirmTier += 1;
     // Shell confirmations are Jev-resolvable: safe commands auto-approve, risky ones ask.
     if (isShellConfirm(call)) {
       jev.markShellApprovalHandled(event.toolCallId);
@@ -181,6 +190,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
           return { block: true, reason: `sandbox-dev: ${gate.reason}` };
         }
         if (gate?.action !== "ask") {
+          autoApproved += 1;
           ctx.ui.notify(`sandbox-dev: auto-approved ${event.toolName} (Jev: safe)`, "info");
           return;
         }
@@ -200,6 +210,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
     if (decision.verdict === "allow") return;
     const block = (output: string) => ({ result: { output, exitCode: 1, cancelled: false, truncated: false } });
     if (decision.verdict === "deny") return block(`sandbox-dev blocked: ${decision.reason}`);
+    confirmTier += 1;
     if (!ctx.hasUI) return block(`sandbox-dev: ${decision.reason}; no UI to confirm, failing closed`);
     const confirmed = await ctx.ui.confirm("sandbox-dev permission", event.command);
     return confirmed ? undefined : block("sandbox-dev: denied by user");
@@ -366,14 +377,16 @@ export default function sandboxDev(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const active = anchor ?? pendingAnchor;
       if (!active) {
-        ctx.ui.notify("sandbox-dev: no plan gate or anchored outcome.", "info");
+        ctx.ui.notify(`sandbox-dev: no plan gate or anchored outcome.\n${policyLine()}`, "info");
         return;
       }
       if (!anchor) {
-        ctx.ui.notify(`sandbox-dev: awaiting the human's approval for ${active.task}.`, "warning");
+        ctx.ui.notify(`sandbox-dev: awaiting the human's approval for ${active.task}.\n${policyLine()}`, "warning");
         return;
       }
       const lines = [
+        policyLine(),
+        "",
         `task: ${anchor.task}`,
         `met: ${anchor.met}`,
         `exhausted: ${anchor.exhausted}`,
@@ -391,6 +404,8 @@ export default function sandboxDev(pi: ExtensionAPI) {
       anchor = undefined;
       pendingAnchor = undefined;
       turnsUsed = 0;
+      confirmTier = 0;
+      autoApproved = 0;
       renderStatus(ctx);
       ctx.ui.notify("sandbox-dev: gate and anchor cleared for this session.", "info");
     },

@@ -8,7 +8,10 @@ for the full reference.
 ## Targets
 
 1. **Permission floor** — a short allow/confirm/deny policy over `tool_call` and `user_bash`,
-   fail-closed with no UI. A pattern is a case-insensitive substring, or a `/regex/`.
+   fail-closed with no UI. A pattern is a case-insensitive substring, or a `/regex/`; the
+   `bash.confirm` tier matches on token boundaries and covers only destructive or shared-state
+   commands. Reads never confirm, and writes are allowed inside cwd and the roots in
+   `PI_SANDBOX_ALLOW_ROOTS` (default `~/.pi/agent` and `/tmp`).
 2. **Conversational plan gate** — `dev_request_approval` appends the gate to the chat; the
    human's reply in the transcript is the record. The extension records nothing.
 3. **Single-outcome anchoring** — supervision arms on the first source write, restates the
@@ -21,7 +24,7 @@ for the full reference.
 | `dev_request_approval` | tool | Read the plan and append the gate to the chat |
 | `dev_outcome_met` | tool | Declare the outcome met with raw evidence |
 | `/dev-approve <task>` | command | Explicit human approval; anchors and starts `/startWork` |
-| `/dev-status` | command | Anchored outcome, `met`/`exhausted`, turn budget |
+| `/dev-status` | command | Anchored outcome, `met`/`exhausted`, turn budget, confirm counters |
 | `/dev-reset` | command | Clear the in-session gate and anchor |
 
 ## Limits

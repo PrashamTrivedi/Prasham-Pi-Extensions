@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_CONFIG,
   classifyToolCall,
@@ -6,8 +8,11 @@ import {
   isOutsideCwd,
   isPlanningPath,
   isShellConfirm,
+  isUnderAnyRoot,
+  matchCommand,
   matchPattern,
   strongest,
+  writeAllowRoots,
   type PolicyConfig,
 } from "../../extensions/sandbox-dev/policy.ts";
 
@@ -22,6 +27,67 @@ describe("matchPattern", () => {
     expect(matchPattern("rm -rf build", "/rm\\s+-rf/")).toBe(true);
     expect(matchPattern("rm build", "/rm\\s+-rf/")).toBe(false);
     expect(matchPattern("anything", "/[/")).toBe(false);
+  });
+});
+
+describe("matchCommand", () => {
+  test("matches whole tokens, not substrings inside a token", () => {
+    expect(matchCommand("git push origin main", "git push")).toBe(true);
+    expect(matchCommand("git pushy", "git push")).toBe(false);
+    expect(matchCommand("curly braces", "curl")).toBe(false);
+    expect(matchCommand("npm publishing", "npm publish")).toBe(false);
+    expect(matchCommand("GIT PUSH origin", "git push")).toBe(true);
+  });
+
+  test("a whitespace run in the pattern matches any whitespace", () => {
+    expect(matchCommand("git   push origin", "git push")).toBe(true);
+    expect(matchCommand("git\tpush origin", "git push")).toBe(true);
+    expect(matchCommand("npm  publish --access public", "npm publish")).toBe(true);
+  });
+
+  test("`rm -r` does not swallow `rm -rf`", () => {
+    expect(matchCommand("rm -r build", "rm -r")).toBe(true);
+    expect(matchCommand("rm -rf build", "rm -r")).toBe(false);
+    expect(matchCommand("rm -rf build", "rm -rf")).toBe(true);
+  });
+
+  test("slash-delimited patterns stay regexes and invalid ones never match", () => {
+    expect(matchCommand("rm -rf build", "/rm\\s+-rf/")).toBe(true);
+    expect(matchCommand("anything", "/[/")).toBe(false);
+  });
+
+  test("empty patterns never match", () => {
+    expect(matchCommand("ls", "   ")).toBe(false);
+  });
+});
+
+describe("isUnderAnyRoot", () => {
+  const roots = ["/tmp", join(homedir(), ".pi", "agent")];
+
+  test("absolute and tilde paths resolve into a root", () => {
+    expect(isUnderAnyRoot("/tmp/x/y.txt", roots, cwd)).toBe(true);
+    expect(isUnderAnyRoot("~/.pi/agent/skills/a/SKILL.md", roots, cwd)).toBe(true);
+    expect(isUnderAnyRoot("tmpfile", roots, "/tmp")).toBe(true);
+  });
+
+  test("paths outside every root are not", () => {
+    expect(isUnderAnyRoot("/etc/hosts", roots, cwd)).toBe(false);
+    expect(isUnderAnyRoot("/tmpfoo/x", roots, cwd)).toBe(false);
+    expect(isUnderAnyRoot("~/.ssh/id_rsa", roots, cwd)).toBe(false);
+    expect(isUnderAnyRoot("", roots, cwd)).toBe(false);
+  });
+});
+
+describe("writeAllowRoots", () => {
+  test("defaults to the Pi agent dir and /tmp", () => {
+    expect(writeAllowRoots({})).toEqual([join(homedir(), ".pi", "agent"), "/tmp"]);
+  });
+
+  test("PI_SANDBOX_ALLOW_ROOTS extends the list and drops relative entries", () => {
+    const roots = writeAllowRoots({ PI_SANDBOX_ALLOW_ROOTS: "/data/scratch:relative/dir:~/notes" });
+    expect(roots).toContain("/data/scratch");
+    expect(roots).toContain("~/notes");
+    expect(roots).not.toContain("relative/dir");
   });
 });
 
@@ -67,6 +133,66 @@ describe("classifyToolCall", () => {
   test("writes outside the working directory require confirmation", () => {
     expect(classifyToolCall({ toolName: "write", input: { path: "/etc/hosts" } }, cwd).verdict).toBe("confirm");
     expect(classifyToolCall({ toolName: "write", input: { path: "src/a.ts" } }, cwd).verdict).toBe("allow");
+  });
+
+  test("reads outside the working directory are allowed", () => {
+    for (const path of [
+      "~/.pi/agent/skills/brainstorm/SKILL.md",
+      "~/.claude/skills/jev-harness/SKILL.md",
+      "~/.pi/agent/projects/-repo-project/memory/MEMORY.md",
+      "/tmp/scratch.txt",
+      "/etc/hosts",
+    ]) {
+      expect(classifyToolCall({ toolName: "read", input: { path } }, cwd).verdict).toBe("allow");
+    }
+  });
+
+  test("writes under an allowed root are allowed, and deny still wins there", () => {
+    expect(classifyToolCall({ toolName: "write", input: { path: "/tmp/scratch.txt" } }, cwd).verdict).toBe("allow");
+    expect(
+      classifyToolCall({ toolName: "edit", input: { path: "~/.pi/agent/projects/x/memory/MEMORY.md" } }, cwd).verdict,
+    ).toBe("allow");
+    expect(classifyToolCall({ toolName: "write", input: { path: "/tmp/.env" } }, cwd).verdict).toBe("deny");
+    expect(classifyToolCall({ toolName: "read", input: { path: "/tmp/.env" } }, cwd).verdict).toBe("deny");
+  });
+
+  test("installs and network calls no longer confirm; destructive commands still do", () => {
+    const allowed = [
+      "curl https://localhost:8787",
+      "wget x",
+      "npm install",
+      "bun add left-pad",
+      "docker ps",
+      "brew list",
+      "apt-get update",
+    ];
+    for (const command of allowed) {
+      expect(classifyToolCall({ toolName: "bash", input: { command } }, cwd).verdict).toBe("allow");
+    }
+    const confirmed = [
+      "sudo ls",
+      "rm -rf build",
+      "rm -r build",
+      "git reset --hard",
+      "chmod -R 777 .",
+      "chown me file",
+      "npm publish",
+      "git push origin main",
+    ];
+    for (const command of confirmed) {
+      expect(classifyToolCall({ toolName: "bash", input: { command } }, cwd).verdict).toBe("confirm");
+    }
+  });
+
+  test("a pattern that merely appears in the command does not confirm", () => {
+    expect(classifyToolCall({ toolName: "bash", input: { command: "grep -r curl src/" } }, cwd).verdict).toBe("allow");
+    expect(classifyToolCall({ toolName: "bash", input: { command: "echo 'npm install runs'" } }, cwd).verdict).toBe("allow");
+  });
+
+  test("force push stays a deny", () => {
+    expect(classifyToolCall({ toolName: "bash", input: { command: "git push --force origin main" } }, cwd).verdict).toBe(
+      "deny",
+    );
   });
   test("tool-name rules are configurable and unprefixed tools pass", () => {
     const config: PolicyConfig = { ...DEFAULT_CONFIG, tools: { deny: ["mcp__danger"], confirm: [] } };
