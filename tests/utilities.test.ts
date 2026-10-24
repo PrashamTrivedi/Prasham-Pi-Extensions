@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import recursiveContext from '../extensions/recursive-context.ts';
 import projectContext from '../extensions/project-context.ts';
+import { gitSection } from '../extensions/project-context.ts';
 
 function harness(extension: Function, cwd: string, trusted = true) {
  const hooks = new Map<string, Function>();
@@ -55,4 +56,49 @@ test('sanitizer is preview-only unless explicitly applied and skips symlinked di
   execFileSync(process.execPath, [script, '--apply'], { env });
   expect(readFileSync(file, 'utf8')).toContain('name: example-skill');
  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('git section reports branch, remote, and uncommitted files, and degrades to empty outside a repo', () => {
+ const inside = gitSection({
+  branch: 'main',
+  remote: 'origin\tgit@github.com:PrashamTrivedi/Prasham-Pi-Extensions.git (fetch)\norigin\tgit@github.com:PrashamTrivedi/Prasham-Pi-Extensions.git (push)',
+  status: ' M extensions/memory/index.ts\n?? docs/memory.md',
+ }, 10);
+ expect(inside).toContain('## Git');
+ expect(inside).toContain('- branch: main');
+ expect(inside).toContain('git@github.com:PrashamTrivedi/Prasham-Pi-Extensions.git');
+ expect(inside).not.toContain('(push)');
+ expect(inside).toContain('- uncommitted: 2 files');
+ expect(inside).toContain('?? docs/memory.md');
+ expect(gitSection({ branch: 'main', remote: null, status: '' })).toContain('uncommitted: clean');
+ expect(gitSection({ branch: null, remote: null, status: null })).toBe('');
+});
+
+test('git section truncates long status lists', () => {
+ const status = Array.from({ length: 30 }, (_, i) => `?? file-${i}.ts`).join('\n');
+ const section = gitSection({ branch: 'main', remote: null, status }, 5);
+ expect(section).toContain('- uncommitted: 30 files');
+ expect(section).toContain('file-4.ts');
+ expect(section).not.toContain('file-5.ts');
+ expect(section).toContain('... (25 more)');
+});
+
+test('project context adds git state for a real repository and omits it elsewhere', async () => {
+ const repo = mkdtempSync(join(tmpdir(), 'pi-git-'));
+ const plain = mkdtempSync(join(tmpdir(), 'pi-nogit-'));
+ try {
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  writeFileSync(join(repo, 'new-file.ts'), 'fixture');
+  const { hooks, ctx } = harness(projectContext, repo);
+  await hooks.get('session_start')!({}, ctx);
+  const injected = await hooks.get('before_agent_start')!({ systemPrompt: 'Base' }, ctx);
+  expect(injected.systemPrompt).toContain('## Git');
+  expect(injected.systemPrompt).toContain('- uncommitted: 1 file');
+  expect(injected.systemPrompt).toContain('new-file.ts');
+
+  const plainHarness = harness(projectContext, plain);
+  await plainHarness.hooks.get('session_start')!({}, plainHarness.ctx);
+  const plainInjected = await plainHarness.hooks.get('before_agent_start')!({ systemPrompt: 'Base' }, plainHarness.ctx);
+  expect(plainInjected.systemPrompt).not.toContain('## Git');
+ } finally { rmSync(repo, { recursive: true, force: true }); rmSync(plain, { recursive: true, force: true }); }
 });
