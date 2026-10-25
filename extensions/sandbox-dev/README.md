@@ -6,18 +6,14 @@ markdown cannot.
 
 ## Targets
 
-1. **Permission floor.** A short allow/confirm/deny policy enforced on `tool_call` and `user_bash`,
-   fail-closed when there is no UI. A pattern is a case-insensitive substring, or a `/regex/` when
-   slash-delimited. Reads are never confirmed — only the protected-path denies restrict them.
-   Writes are allowed inside the working directory and under a small set of roots (`~/.pi/agent`,
-   `/tmp`, plus `PI_SANDBOX_ALLOW_ROOTS`), and confirmed anywhere else. The `bash.confirm` list is
-   limited to destructive or shared-state commands (`sudo`, `rm -rf`, `rm -r`, `git reset --hard`,
-   `git push`, `chmod`, `chown`, `* publish`), matched on token boundaries so a command that merely
-   mentions a pattern does not match; installs and network calls are left to Jev. Shell `confirm`
-   verdicts are resolved through Jev (the `jev-gate` shell-safety decision via `shared/jev.ts`): a
-   safe command auto-approves (with a notify line), a destructive one is blocked, and a
-   risky/uncertain one — or an unavailable Jev — falls through to the human confirm. Non-shell
-   `confirm` (path outside cwd) stays deterministic.
+1. **Decision-server gate.** Every `tool_call` is mapped to the neutral jev-harness tool shape and
+   sent to the decision server (`shared/jev.ts` `runJevDecision`). Approval (`{}` or no `gate`) runs
+   the call silently — the tool call is its own feedback, and a line per read would be noise. Anything else — `deny`, `ask`, or an unreachable server — becomes
+   exactly one plain yes/no prompt for the human, and with no UI it fails closed. Nothing is blocked
+   or pre-approved locally: this package holds no dangerous-command list and no protected-path list,
+   and it remembers no approval between calls. `dev_request_approval` and `dev_outcome_met` are the
+   only exempt tools. Commands the human types with `!cmd` are not judged — they are human actions,
+   not tool calls.
 2. **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md`
    from disk, asks Jev (`shared/jev.ts` `askJev`) whether the plan is safe to implement autonomously,
    and either auto-approves (anchors the outcome, records a `sandbox-dev-gate` audit message, and
@@ -36,7 +32,7 @@ markdown cannot.
 | `dev_request_approval` | tool | Read the plan and append the gate to the chat |
 | `dev_outcome_met` | tool | Declare the outcome met with raw evidence |
 | `/dev-approve <task>` | command | Explicit human approval; anchors and starts `/startWork` |
-| `/dev-status` | command | Show the anchored outcome, `met`/`exhausted`, turn budget, and the session's confirm counters |
+| `/dev-status` | command | Show the anchored outcome, `met`/`exhausted`, turn budget, and the session's judged / server-approved / prompted counters |
 | `/dev-reset` | command | Clear the in-session gate and anchor |
 
 ## Approval flow
@@ -52,15 +48,12 @@ markdown cannot.
 
 ## Configuration
 
-None at the file level. The policy is built in (`DEFAULT_CONFIG` in `policy.ts`). A project-local file
-that could zero the `deny` lists would make the floor unenforceable, so there is no config file.
+None. There is no policy to configure, no pattern list, and no environment variable: the decision
+server owns every judgement, and this extension only relays it and asks the human when the server
+does not approve.
 
-The only knob is `PI_SANDBOX_ALLOW_ROOTS`: a path-separator-delimited list of extra roots where a
-`write`/`edit` needs no confirmation (it only relaxes `confirm`, never `deny`). Defaults are the Pi
-agent directory (`~/.pi/agent`) and `/tmp`.
-
-`/dev-status` prints `policy: N confirm(s), M auto-approved (Jev)` — the before/after instrument for
-the confirm tier. Counters reset on session start and `/dev-reset`.
+`/dev-status` prints `policy: N judged, M server-approved, P prompted` — the before/after instrument
+for the gate. Counters reset on session start and `/dev-reset`.
 
 ## Session entries
 
@@ -70,7 +63,10 @@ the confirm tier. Counters reset on session start and `/dev-reset`.
 
 ## Limits
 
-Policy, not a security boundary: a permitted `bash` call can do anything the Pi process can. The gate
-is conversational — the agent follows the skill and the transcript is the audit trail, but nothing
-mechanically refuses a source write before approval. Fabric workers run headless with
-`--no-extensions`, so none of this is active inside a worker.
+The gate's strength is the decision server's: this package adds no judgement of its own. Every tool
+call costs one Bun subprocess spawn plus the harness's own request, and a server that is down or slow
+produces a prompt per tool call with no memory to quieten it. Policy, not a security boundary: an
+approved `bash` call can do anything the Pi process can. The plan gate is conversational — the agent
+follows the skill and the transcript is the audit trail, but nothing mechanically refuses a source
+write before approval. Fabric workers run headless with `--no-extensions`, so none of this is active
+inside a worker.

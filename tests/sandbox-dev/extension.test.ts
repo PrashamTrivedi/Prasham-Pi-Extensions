@@ -23,6 +23,7 @@ function harness(
   const sent: string[] = [];
   const messages: Array<{ customType: string; content: string }> = [];
   const confirmCalls: string[] = [];
+  const jevDecisionCalls: string[] = [];
 
   const pi: any = {
     on: (name: string, handler: Function) => hooks.set(name, handler),
@@ -64,8 +65,14 @@ function harness(
     inputTokens: 0,
   }));
 
+  const baseRunDecision = jev.runJevDecision;
+  jev.runJevDecision = async (eventName: string, payload: any) => {
+    jevDecisionCalls.push(eventName);
+    return baseRunDecision(eventName, payload);
+  };
+
   sandboxDev(pi);
-  return { hooks, tools, commands, appended, notifications, sent, messages, confirmCalls, ctx };
+  return { hooks, tools, commands, appended, notifications, sent, messages, confirmCalls, jevDecisionCalls, ctx };
 }
 
 function tempRepo(task: string): string {
@@ -89,66 +96,115 @@ async function armGate(task: string) {
   return { cwd, instance, result };
 }
 
-describe("permission floor", () => {
-  test("denies protected paths", async () => {
-    const { hooks, ctx } = harness(process.cwd());
+describe("decision server (single gate)", () => {
+  test("every tool call reaches the decision server exactly once", async () => {
+    const { hooks, jevDecisionCalls, ctx } = harness(process.cwd(), { hasUI: true, jevDecision: async () => ({}) });
     await hooks.get("session_start")!({}, ctx);
-    const result = await hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, ctx);
-    expect(result?.block).toBe(true);
-    expect(result?.reason).toContain("protected pattern");
+    const calls: Array<{ toolName: string; input: Record<string, unknown> }> = [
+      { toolName: "bash", input: { command: "ls" } },
+      { toolName: "read", input: { path: "src/a.ts" } },
+      { toolName: "write", input: { path: "src/a.ts", content: "x" } },
+      { toolName: "edit", input: { path: "src/a.ts", edits: [] } },
+      { toolName: "mcp__memory__find", input: { q: "x" } },
+      { toolName: "spawn_agents", input: { agents: [{ model: "flash", task: "x" }] } },
+      { toolName: "web_fetch", input: { url: "https://example.com" } },
+    ];
+    for (const call of calls) {
+      expect(await hooks.get("tool_call")!(call, ctx)).toBeUndefined();
+    }
+    expect(jevDecisionCalls).toHaveLength(calls.length);
+    expect(jevDecisionCalls.every((name) => name === "pre_tool")).toBe(true);
   });
 
-  test("fails closed without UI for confirmation-tier calls", async () => {
-    const { hooks, ctx } = harness(process.cwd(), { hasUI: false });
+  test("nothing is blocked by policy, not even a root rm or a secret read", async () => {
+    const { hooks, confirmCalls, jevDecisionCalls, ctx } = harness(process.cwd(), {
+      hasUI: true,
+      jevDecision: async () => ({}),
+    });
     await hooks.get("session_start")!({}, ctx);
-    const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git push origin main" } }, ctx);
-    expect(result?.block).toBe(true);
-    expect(result?.reason).toContain("failing closed");
+    for (const call of [
+      { toolName: "bash", input: { command: "rm -rf /" } },
+      { toolName: "bash", input: { command: "git push --force origin main" } },
+      { toolName: "read", input: { path: "~/.ssh/id_rsa" } },
+      { toolName: "write", input: { path: ".env" } },
+    ]) {
+      expect(await hooks.get("tool_call")!(call, ctx)).toBeUndefined();
+    }
+    expect(jevDecisionCalls).toHaveLength(4);
+    expect(confirmCalls).toHaveLength(0);
   });
 
-  test("allows ordinary work", async () => {
-    const { hooks, ctx } = harness(process.cwd());
-    await hooks.get("session_start")!({}, ctx);
-    expect(await hooks.get("tool_call")!({ toolName: "bash", input: { command: "npm test" } }, ctx)).toBeUndefined();
-    expect(await hooks.get("tool_call")!({ toolName: "read", input: { path: "src/a.ts" } }, ctx)).toBeUndefined();
-  });
-});
+  test("a rejected call asks the human and honors the answer", async () => {
+    const rejecting = harness(process.cwd(), {
+      hasUI: true,
+      confirm: true,
+      jevDecision: async () => ({ gate: { action: "deny", reason: "secret material" } }),
+    });
+    await rejecting.hooks.get("session_start")!({}, rejecting.ctx);
+    const allowed = await rejecting.hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, rejecting.ctx);
+    expect(allowed).toBeUndefined();
+    expect(rejecting.confirmCalls).toHaveLength(1);
+    expect(rejecting.confirmCalls[0]).toContain("secret material");
 
-describe("policy counters", () => {
-  test("/dev-status reports confirm-tier calls and Jev auto-approvals, and /dev-reset clears them", async () => {
+    const declining = harness(process.cwd(), {
+      hasUI: true,
+      confirm: false,
+      jevDecision: async () => ({ gate: { action: "deny", reason: "secret material" } }),
+    });
+    await declining.hooks.get("session_start")!({}, declining.ctx);
+    const blocked = await declining.hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, declining.ctx);
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("denied by you");
+  });
+
+  test("no server answer still prompts, and the gate tools are exempt", async () => {
+    const unavailable = harness(process.cwd(), { hasUI: true, confirm: true, jevDecision: async () => undefined });
+    await unavailable.hooks.get("session_start")!({}, unavailable.ctx);
+    expect(
+      await unavailable.hooks.get("tool_call")!({ toolName: "read", input: { path: "src/a.ts" } }, unavailable.ctx),
+    ).toBeUndefined();
+    expect(unavailable.confirmCalls).toHaveLength(1);
+    expect(unavailable.confirmCalls[0]).toContain("unavailable");
+
+    const denied = harness(process.cwd(), {
+      hasUI: false,
+      jevDecision: async () => ({ gate: { action: "deny", reason: "no ui" } }),
+    });
+    await denied.hooks.get("session_start")!({}, denied.ctx);
+    const blocked = await denied.hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, denied.ctx);
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("failing closed");
+
+    const exempt = harness(process.cwd(), { hasUI: true, jevDecision: async () => ({}) });
+    await exempt.hooks.get("session_start")!({}, exempt.ctx);
+    await exempt.hooks.get("tool_call")!({ toolName: "dev_outcome_met", input: {} }, exempt.ctx);
+    await exempt.hooks.get("tool_call")!({ toolName: "dev_request_approval", input: {} }, exempt.ctx);
+    expect(exempt.jevDecisionCalls).toHaveLength(0);
+  });
+
+  test("a command the human typed is not judged", async () => {
+    const { hooks } = harness(process.cwd(), { hasUI: true, jevDecision: async () => ({}) });
+    expect(hooks.has("user_bash")).toBe(false);
+  });
+
+  test("/dev-status reports the counters and /dev-reset clears them", async () => {
     const { hooks, commands, notifications, ctx } = harness(process.cwd(), {
       hasUI: true,
       confirm: false,
-      jevDecision: async () => ({ gate: { action: "allow", reason: "safe push" } }),
+      jevDecision: async () => ({ gate: { action: "deny", reason: "nope" } }),
     });
     await hooks.get("session_start")!({}, ctx);
-
-    // Shell confirm resolved by Jev: one confirm-tier call, one auto-approval.
-    const pushed = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git push origin main" } }, ctx);
-    expect(pushed).toBeUndefined();
-    // Non-shell confirm still reaches the human, declined here.
-    const declined = await hooks.get("tool_call")!({ toolName: "write", input: { path: "/etc/hosts" } }, ctx);
-    expect(declined?.block).toBe(true);
+    await hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, ctx);
+    await hooks.get("tool_call")!({ toolName: "bash", input: { command: "ls" } }, ctx);
 
     notifications.length = 0;
     await commands.get("dev-status").handler("", ctx);
-    expect(notifications.some((line) => line.includes("policy: 2 confirm(s), 1 auto-approved (Jev)"))).toBe(true);
+    expect(notifications.some((line) => line.includes("policy: 2 judged, 0 server-approved, 2 prompted"))).toBe(true);
 
     await commands.get("dev-reset").handler("", ctx);
     notifications.length = 0;
     await commands.get("dev-status").handler("", ctx);
-    expect(notifications.some((line) => line.includes("policy: 0 confirm(s), 0 auto-approved (Jev)"))).toBe(true);
-  });
-
-  test("a read outside the working directory never reaches the human", async () => {
-    const { hooks, confirmCalls, ctx } = harness(process.cwd(), { hasUI: true });
-    await hooks.get("session_start")!({}, ctx);
-    const result = await hooks.get("tool_call")!(
-      { toolName: "read", input: { path: "~/.pi/agent/skills/brainstorm/SKILL.md" } },
-      ctx,
-    );
-    expect(result).toBeUndefined();
-    expect(confirmCalls).toHaveLength(0);
+    expect(notifications.some((line) => line.includes("policy: 0 judged, 0 server-approved, 0 prompted"))).toBe(true);
   });
 });
 

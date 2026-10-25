@@ -3,9 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, classifyToolCall, isImplementation, isShellConfirm, type PolicyCall } from "./policy.ts";
+import { BUDGET, isImplementation } from "./policy.ts";
 import { anchorMessage, extractOutcome } from "./state.ts";
 import * as jevModule from "../shared/jev.ts";
+import { mapToolCall } from "../shared/tool-call.ts";
 
 /**
  * Mutable bridge so tests can stub the Jev calls without spawning a subprocess or hitting the
@@ -13,7 +14,6 @@ import * as jevModule from "../shared/jev.ts";
  */
 export const jev = {
   runJevDecision: jevModule.runJevDecision,
-  markShellApprovalHandled: jevModule.markShellApprovalHandled,
   askJev: jevModule.askJev,
 };
 
@@ -54,15 +54,15 @@ interface Anchor extends PlanAnchor {
 }
 
 export default function sandboxDev(pi: ExtensionAPI) {
-  const config = DEFAULT_CONFIG;
   /** Armed once implementation starts. Supervision is keyed on this, not on approval. */
   let anchor: Anchor | undefined;
   /** Present once the gate is shown; the outcome comes from the plan it read. */
   let pendingAnchor: PlanAnchor | undefined;
   let turnsUsed = 0;
-  /** Pass-1 confirm verdicts this session, and how many Jev auto-resolved instead of the human. */
-  let confirmTier = 0;
-  let autoApproved = 0;
+  /** Tool calls sent to the decision server, calls it approved, and prompts the human saw. */
+  let judged = 0;
+  let serverApproved = 0;
+  let prompted = 0;
 
   const status = (ctx: ExtensionContext, text: string | undefined) => {
     if (ctx.mode === "tui" || ctx.mode === "rpc") ctx.ui.setStatus(STATUS_KEY, text);
@@ -72,8 +72,8 @@ export default function sandboxDev(pi: ExtensionAPI) {
     try { return ctx.sessionManager.getSessionId(); } catch { return "unknown"; }
   };
 
-  /** The before/after instrument: how much the floor still asks, and how much Jev settles. */
-  const policyLine = () => `policy: ${confirmTier} confirm(s), ${autoApproved} auto-approved (Jev)`;
+  /** The before/after instrument: how much the decision server settles, and how much reaches me. */
+  const policyLine = () => `policy: ${judged} judged, ${serverApproved} server-approved, ${prompted} prompted`;
 
   const renderStatus = (ctx: ExtensionContext) => {
     const active = anchor ?? pendingAnchor;
@@ -102,7 +102,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
 
   /** Present the gate in the chat. The human's reply is the record; the extension records nothing. */
   const presentGate = (ctx: ExtensionContext, task: string, outcome: string) => {
-    pendingAnchor = { task, outcome, budget: config.budget };
+    pendingAnchor = { task, outcome, budget: BUDGET };
     pi.sendMessage(
       {
         customType: GATE_MESSAGE,
@@ -136,8 +136,9 @@ export default function sandboxDev(pi: ExtensionAPI) {
     anchor = undefined;
     pendingAnchor = undefined;
     turnsUsed = 0;
-    confirmTier = 0;
-    autoApproved = 0;
+    judged = 0;
+    serverApproved = 0;
+    prompted = 0;
     renderStatus(ctx);
   });
 
@@ -153,68 +154,61 @@ export default function sandboxDev(pi: ExtensionAPI) {
     };
   });
 
-  // --- Target 1: permission floor ----------------------------------------------------------
+  // --- Target 1: the decision server judges every tool call --------------------------------
+
+  /**
+   * One tool call, one decision-server question. Approval runs the call untouched; anything else —
+   * a reject, an "ask", or an unreachable server — becomes exactly one plain yes/no prompt that the
+   * human can override. Nothing is blocked by policy and nothing is remembered between calls.
+   */
+  const judgeCall = async (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => {
+    const input = event.input as unknown as Record<string, unknown>;
+    judged += 1;
+
+    const verdicts = await jev.runJevDecision("pre_tool", {
+      sessionId: sessionId(ctx),
+      cwd: ctx.cwd,
+      transcriptPath: process.env.PI_SESSION_FILE,
+      tool: mapToolCall(event.toolName, input),
+    });
+
+    let reason = "the decision server is unavailable";
+    if (verdicts !== undefined) {
+      for (const note of verdicts.notify ?? []) ctx.ui.notify(note, "info");
+      // Apply the rewrite before judging, so an approved call runs the rewritten input either way.
+      if (verdicts.rewrite) {
+        Object.assign(input, verdicts.rewrite.input);
+        ctx.ui.notify(`sandbox-dev: ${verdicts.rewrite.note}`, "info");
+      }
+      // Approval is silent: the tool call itself is the feedback, and a line per read would be noise.
+      if (!verdicts.gate) {
+        serverApproved += 1;
+        return undefined;
+      }
+      reason = verdicts.gate.reason;
+    }
+
+    if (!ctx.hasUI) {
+      return { block: true, reason: `sandbox-dev: ${reason}; no UI to confirm, failing closed` };
+    }
+    prompted += 1;
+    const preview = JSON.stringify(input).slice(0, 300);
+    const approved = await ctx.ui.confirm("sandbox-dev permission", `${event.toolName}: ${reason}\n\n${preview}`);
+    return approved ? undefined : { block: true, reason: "sandbox-dev: denied by you" };
+  };
 
   pi.on("tool_call", async (event, ctx) => {
+    // The gate machinery already asks the server about the plan; judging these would ask twice.
     if (event.toolName === "dev_request_approval" || event.toolName === "dev_outcome_met") return;
-    const input = event.input as unknown as Record<string, unknown>;
-    const call: PolicyCall = { toolName: event.toolName, input };
 
+    const call = { toolName: event.toolName, input: event.input as unknown as Record<string, unknown> };
     // The first source mutation after the gate marks the start of implementation; arm supervision.
     if (pendingAnchor && isImplementation(call, ctx.cwd)) armAnchor(ctx);
 
-    const decision = classifyToolCall(call, ctx.cwd, config);
-    if (decision.verdict === "allow") return;
-    if (decision.verdict === "deny") {
-      if (isShellConfirm(call)) jev.markShellApprovalHandled(event.toolCallId);
-      ctx.ui.notify(`sandbox-dev denied ${event.toolName}: ${decision.reason}`, "error");
-      return { block: true, reason: `sandbox-dev: ${decision.reason}` };
-    }
-    confirmTier += 1;
-    // Shell confirmations are Jev-resolvable: safe commands auto-approve, risky ones ask.
-    if (isShellConfirm(call)) {
-      jev.markShellApprovalHandled(event.toolCallId);
-      const verdicts = await jev.runJevDecision("pre_tool", {
-        sessionId: sessionId(ctx),
-        cwd: ctx.cwd,
-        tool: {
-          kind: "shell",
-          command: String(input.command ?? ""),
-          description: String(input.description ?? ""),
-        },
-      });
-      // `undefined` means Jev was unavailable — fail closed by falling through to the human confirm.
-      if (verdicts !== undefined) {
-        const gate = verdicts.gate;
-        if (gate?.action === "deny") {
-          return { block: true, reason: `sandbox-dev: ${gate.reason}` };
-        }
-        if (gate?.action !== "ask") {
-          autoApproved += 1;
-          ctx.ui.notify(`sandbox-dev: auto-approved ${event.toolName} (Jev: safe)`, "info");
-          return;
-        }
-      }
-    }
-    if (!ctx.hasUI) {
-      return { block: true, reason: `sandbox-dev: ${decision.reason}; no UI to confirm, failing closed` };
-    }
-    const preview = JSON.stringify(input).slice(0, 500);
-    const confirmed = await ctx.ui.confirm("sandbox-dev permission", `${event.toolName}: ${decision.reason}\n\n${preview}`);
-    return confirmed ? undefined : { block: true, reason: "sandbox-dev: denied by user" };
+    return judgeCall(event, ctx);
   });
 
-  pi.on("user_bash", async (event, ctx) => {
-    const call: PolicyCall = { toolName: "bash", input: { command: event.command } };
-    const decision = classifyToolCall(call, ctx.cwd, config);
-    if (decision.verdict === "allow") return;
-    const block = (output: string) => ({ result: { output, exitCode: 1, cancelled: false, truncated: false } });
-    if (decision.verdict === "deny") return block(`sandbox-dev blocked: ${decision.reason}`);
-    confirmTier += 1;
-    if (!ctx.hasUI) return block(`sandbox-dev: ${decision.reason}; no UI to confirm, failing closed`);
-    const confirmed = await ctx.ui.confirm("sandbox-dev permission", event.command);
-    return confirmed ? undefined : block("sandbox-dev: denied by user");
-  });
+  // `user_bash` is deliberately not judged: it is a command the human typed, not a tool call.
 
   // --- Target 2: the plan gate, conversational ---------------------------------------------
 
@@ -258,7 +252,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
       const outcome = extractOutcome(plan.text);
       if (!outcome) return notApproved(`taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.`);
       if (await planLooksSafe(ctx, plan.text, task)) {
-        pendingAnchor = { task, outcome, budget: config.budget };
+        pendingAnchor = { task, outcome, budget: BUDGET };
         armAnchor(ctx);
         ctx.ui.notify(`sandbox-dev: auto-approved ${task} (Jev: safe)`, "info");
         pi.sendMessage(
@@ -310,7 +304,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
         ctx.ui.notify(`taskNotes/${task}/taskFindings.md has no "Original Ask" section to anchor.`, "warning");
         return;
       }
-      pendingAnchor = { task, outcome, budget: config.budget };
+      pendingAnchor = { task, outcome, budget: BUDGET };
       armAnchor(ctx);
       ctx.ui.notify(`Approved ${task}. Outcome anchored.`, "info");
       pi.sendUserMessage(`/startWork taskNotes/${task}/taskFindings.md, mode: autonomous`, { expandPromptTemplates: true });
@@ -404,8 +398,9 @@ export default function sandboxDev(pi: ExtensionAPI) {
       anchor = undefined;
       pendingAnchor = undefined;
       turnsUsed = 0;
-      confirmTier = 0;
-      autoApproved = 0;
+      judged = 0;
+      serverApproved = 0;
+      prompted = 0;
       renderStatus(ctx);
       ctx.ui.notify("sandbox-dev: gate and anchor cleared for this session.", "info");
     },

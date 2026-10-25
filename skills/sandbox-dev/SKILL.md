@@ -63,10 +63,11 @@ there is nothing to detect, and promising a mode would be wrong. Do only this:
    `dev_request_approval` and `dev_outcome_met`.
 
 3. **Note who owns permissions.** The extension gate - not you, not a sandbox -
-   decides what is allowed. If a call is denied, read the message, change the
-   plan, and never reword, encode, or indirect a command to slip past the gate.
-   If the plan genuinely requires an operation the gate denies, stop and ask the
-   human rather than fighting it.
+   decides what is allowed. Every tool call goes to the decision server; a
+   rejection becomes a prompt for the human, whose answer is final. If a call is
+   denied, read the message, change the plan, and never reword, encode, or
+   indirect a command to slip past the gate. If the plan genuinely requires an
+   operation the human declined, stop and ask them rather than fighting it.
 
 4. **Resume check.** If `taskNotes/<task>/taskFindings.md` already exists, the
    task is already planned. If this session has no approval yet, skip to PHASE 2

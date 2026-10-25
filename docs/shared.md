@@ -9,6 +9,8 @@ extension entry. It holds the pieces more than one feature needs.
 | `state.ts` | Branch-aware state helpers, excluded from model context. |
 | `usage.ts` | `UsageWindow` / `ProviderUsage` types and `formatUsage`. |
 | `ledger.ts` | Node-safe HTTP client for the Jev decision ledger; never throws, returns `{ rows, error }`. |
+| `jev.ts` | The jev-harness bridge: `runJevDecision` (adapter subprocess, used as the tool-call gate) and `askJev` (direct decisions-endpoint client, used by the plan gate). |
+| `tool-call.ts` | `mapToolCall` / `flattenContent`: the neutral jev-harness tool shape, shared so the gate and the result hook never drift apart. |
 | `ledger-server.ts` | Bun-run read-only SQLite server that `ledger.ts` talks to. Pi runs extensions under Node, where `bun:sqlite` is unavailable, so the ledger is read out of process. |
 | `panel.ts` | The bordered panel renderer and `meter` shared by the cockpit and duck. |
 | `questionnaire.ts` | The reusable Claude-style AskUserQuestion modal used by `/duck answer`. |

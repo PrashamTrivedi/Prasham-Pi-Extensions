@@ -129,22 +129,6 @@ export function runJevDecision(eventName: string, payload: Record<string, unknow
 }
 
 /**
- * Shell-approval coordination between `sandbox-dev` (runs first, owns the prompt for commands its
- * deterministic policy flags) and `jev-gate` (runs second). When `sandbox-dev` has already resolved
- * a shell command's safety, `jev-gate` skips its own shell-safety gate so the human is prompted at
- * most once per tool call.
- */
-const shellHandled = new Set<string>();
-
-export function markShellApprovalHandled(toolCallId: string): void {
-  shellHandled.add(toolCallId);
-}
-
-export function shellApprovalHandled(toolCallId: string): boolean {
-  return shellHandled.has(toolCallId);
-}
-
-/**
  * Ask Jev a set of questions directly. Reads the endpoint/model/timeout and the bearer key the
  * same way jev-harness does, but performs no logging. Throws on any failure so callers can fail
  * closed.

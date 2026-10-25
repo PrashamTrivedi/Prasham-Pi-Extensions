@@ -93,72 +93,63 @@ const SAFE_ANSWERS = {
   inputTokens: 0,
 };
 
-describe("shell-confirm Jev routing", () => {
-  test("(a) Jev gate none auto-approves with a visible notify", async () => {
+describe("decision server (single gate)", () => {
+  test("approval runs the call silently, with no prompt", async () => {
     const cwd = tempRepo("add-widget");
     try {
-      const { hooks, notifications, ctx } = harness(cwd, {
+      const { hooks, notifications, confirmCalls, jevDecisionCalls, ctx } = harness(cwd, {
         hasUI: true,
         jevDecision: async () => ({}),
       });
       await hooks.get("session_start")!({}, ctx);
       const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "sudo ls" } }, ctx);
       expect(result).toBeUndefined();
-      expect(notifications.some((line) => line.includes("auto-approved bash") && line.includes("Jev: safe"))).toBe(true);
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  test("(b) Jev gate deny blocks the command", async () => {
-    const cwd = tempRepo("add-widget");
-    try {
-      const { hooks, confirmCalls, ctx } = harness(cwd, {
-        hasUI: true,
-        jevDecision: async () => ({ gate: { action: "deny", reason: "destructive rm" } }),
-      });
-      await hooks.get("session_start")!({}, ctx);
-      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "rm -rf build" } }, ctx);
-      expect(result?.block).toBe(true);
-      expect(result?.reason).toContain("destructive rm");
+      expect(jevDecisionCalls).toEqual(["pre_tool"]);
+      // Approval adds no notification line: the tool call is its own feedback.
+      expect(notifications).toHaveLength(0);
       expect(confirmCalls).toHaveLength(0);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("(c) Jev gate ask falls through to exactly one human confirm", async () => {
+  test("a reject prompts once with the server's reason and approving runs it", async () => {
     const cwd = tempRepo("add-widget");
     try {
       const { hooks, confirmCalls, ctx } = harness(cwd, {
         hasUI: true,
         confirm: true,
+        jevDecision: async () => ({ gate: { action: "deny", reason: "destructive rm" } }),
+      });
+      await hooks.get("session_start")!({}, ctx);
+      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "rm -rf build" } }, ctx);
+      expect(result).toBeUndefined();
+      expect(confirmCalls).toHaveLength(1);
+      expect(confirmCalls[0]).toContain("destructive rm");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a reject plus a decline blocks with the human's own refusal", async () => {
+    const cwd = tempRepo("add-widget");
+    try {
+      const { hooks, confirmCalls, ctx } = harness(cwd, {
+        hasUI: true,
+        confirm: false,
         jevDecision: async () => ({ gate: { action: "ask", reason: "risky push" } }),
       });
       await hooks.get("session_start")!({}, ctx);
       const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git push origin main" } }, ctx);
-      expect(result).toBeUndefined();
+      expect(result?.block).toBe(true);
+      expect(result?.reason).toContain("denied by you");
       expect(confirmCalls).toHaveLength(1);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("non-shell confirm stays deterministic and never calls Jev", async () => {
-    const cwd = tempRepo("add-widget");
-    try {
-      const { hooks, confirmCalls, jevDecisionCalls, ctx } = harness(cwd, { hasUI: true, confirm: true });
-      await hooks.get("session_start")!({}, ctx);
-      const result = await hooks.get("tool_call")!({ toolName: "write", input: { path: "/etc/hosts", content: "x" } }, ctx);
-      expect(result).toBeUndefined();
-      expect(jevDecisionCalls).toHaveLength(0);
-      expect(confirmCalls).toHaveLength(1);
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  test("shell-confirm transport failure fails closed to the human confirm", async () => {
+  test("an unreachable server prompts instead of failing open", async () => {
     const cwd = tempRepo("add-widget");
     try {
       const { hooks, confirmCalls, ctx } = harness(cwd, {
@@ -167,28 +158,66 @@ describe("shell-confirm Jev routing", () => {
         jevDecision: async () => undefined, // adapter subprocess unavailable
       });
       await hooks.get("session_start")!({}, ctx);
-      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git reset --hard origin/main" } }, ctx);
+      const result = await hooks.get("tool_call")!({ toolName: "bash", input: { command: "git reset --hard" } }, ctx);
       expect(result).toBeUndefined();
       expect(confirmCalls).toHaveLength(1);
+      expect(confirmCalls[0]).toContain("unavailable");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("shell-confirm marks the approval handled so jev-gate does not double-prompt", async () => {
+  test("no UI fails closed with the server's reason", async () => {
     const cwd = tempRepo("add-widget");
     try {
-      const marked: string[] = [];
-      const original = jev.markShellApprovalHandled;
-      jev.markShellApprovalHandled = (id: string) => { marked.push(id); };
-      try {
-        const { hooks, ctx } = harness(cwd, { hasUI: true, jevDecision: async () => ({}) });
-        await hooks.get("session_start")!({}, ctx);
-        await hooks.get("tool_call")!({ toolName: "bash", input: { command: "rm -rf node_modules" }, toolCallId: "call-1" }, ctx);
-        expect(marked).toContain("call-1");
-      } finally {
-        jev.markShellApprovalHandled = original;
-      }
+      const { hooks, ctx } = harness(cwd, {
+        hasUI: false,
+        jevDecision: async () => ({ gate: { action: "deny", reason: "secret read" } }),
+      });
+      await hooks.get("session_start")!({}, ctx);
+      const result = await hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, ctx);
+      expect(result?.block).toBe(true);
+      expect(result?.reason).toContain("secret read");
+      expect(result?.reason).toContain("failing closed");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a rewrite is applied and notify lines are shown", async () => {
+    const cwd = tempRepo("add-widget");
+    try {
+      const { hooks, notifications, ctx } = harness(cwd, {
+        hasUI: true,
+        jevDecision: async () => ({
+          notify: ["narrowed the command"],
+          rewrite: { input: { command: "ls -la" }, note: "rewrote the command" },
+        }),
+      });
+      await hooks.get("session_start")!({}, ctx);
+      const event = { toolName: "bash", input: { command: "ls" } };
+      expect(await hooks.get("tool_call")!(event, ctx)).toBeUndefined();
+      expect(event.input.command).toBe("ls -la");
+      expect(notifications.some((line) => line.includes("narrowed the command"))).toBe(true);
+      expect(notifications.some((line) => line.includes("rewrote the command"))).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("there is no grant memory: the same rejected call prompts every time", async () => {
+    const cwd = tempRepo("add-widget");
+    try {
+      const { hooks, confirmCalls, jevDecisionCalls, ctx } = harness(cwd, {
+        hasUI: true,
+        confirm: false,
+        jevDecision: async () => ({ gate: { action: "deny", reason: "secret read" } }),
+      });
+      await hooks.get("session_start")!({}, ctx);
+      await hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, ctx);
+      await hooks.get("tool_call")!({ toolName: "read", input: { path: ".env" } }, ctx);
+      expect(confirmCalls).toHaveLength(2);
+      expect(jevDecisionCalls).toHaveLength(2);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
