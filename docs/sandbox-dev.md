@@ -29,5 +29,6 @@ for the full reference.
 
 The gate's judgement is the decision server's — this package adds none of its own. Every tool call
 costs one adapter subprocess plus the harness request, and an unreachable server prompts once per
-tool call with no approval memory. Fabric workers run headless with `--no-extensions`, so none of
-this is active inside a worker.
+tool call with no approval memory. Which decisions are enabled, what they cover, and what is still
+unjudged is recorded in [decision-server.md](decision-server.md). Fabric workers run headless with
+`--no-extensions`, so none of this is active inside a worker.

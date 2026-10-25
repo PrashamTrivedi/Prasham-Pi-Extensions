@@ -56,7 +56,7 @@ The herdr-generated integration is intentionally not redistributed. Install herd
 
 ## Documentation
 
-One guide per extension: [fabric](docs/fabric.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md).
+One guide per extension: [fabric](docs/fabric.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
 
 ## Fabric: delegate without losing the thread
 
