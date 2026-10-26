@@ -18,6 +18,7 @@
     "image": "https://raw.githubusercontent.com/PrashamTrivedi/Prasham-Pi-Extensions/main/docs/preview.png",
     "extensions": [
       "./extensions/fabric/index.ts",
+      "./extensions/btw/index.ts",
       "./extensions/sandbox-dev/index.ts",
       "./extensions/usage/index.ts",
       "./extensions/workbench/index.ts",

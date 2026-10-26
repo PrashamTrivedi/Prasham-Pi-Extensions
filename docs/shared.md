@@ -14,6 +14,8 @@ extension entry. It holds the pieces more than one feature needs.
 | `ledger-server.ts` | Bun-run read-only SQLite server that `ledger.ts` talks to. Pi runs extensions under Node, where `bun:sqlite` is unavailable, so the ledger is read out of process. |
 | `panel.ts` | The bordered panel renderer and `meter` shared by the cockpit and duck. |
 | `questionnaire.ts` | The reusable Claude-style AskUserQuestion modal used by `/duck answer`. |
+| `full-screen.ts` | Full-window sizing/fitting (`windowHeight`, `fitScreen`) and the process-wide screen-depth lock shared by Fabric and BTW. |
+| `nested.ts` | Nested model-stream accumulation, usage/error helpers, and opencode attribution headers shared by Duck and BTW. |
 | `index.ts` | Barrel export. |
 
 ## Why a library

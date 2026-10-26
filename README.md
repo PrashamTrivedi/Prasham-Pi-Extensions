@@ -42,6 +42,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | Extension | What it does | Controls |
 | --- | --- | --- |
 | **Fabric** | Recursive agent teams, worktree isolation, live agent rows, comparisons, and per-agent transcripts | `/agents`, four agent tools |
+| **BTW** | A main-chat-only side chat that answers from the current transcript and can stage a summary in the editor | `/btw`, `/btw send`, `PI_BTW_MODEL` |
 | **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
 | **Workbench** | Pet indicator, two-line footer, and a cockpit docked above the editor with context, provider usage, and recent decisions | `/cockpit`, `workbench.config.json` |
 | **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
@@ -56,7 +57,7 @@ The herdr-generated integration is intentionally not redistributed. Install herd
 
 ## Documentation
 
-One guide per extension: [fabric](docs/fabric.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
+One guide per extension: [fabric](docs/fabric.md) · [btw](docs/btw.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
 
 ## Fabric: delegate without losing the thread
 
@@ -151,6 +152,14 @@ Results, patches, activity snapshots, and worktrees live under the system tempor
 - Review the [security notes](SECURITY.md) before installing.
 
 ## Other extension configuration
+
+### BTW
+
+`/btw` opens a main-chat-only side chat. It prefers a free model; set
+`PI_BTW_MODEL` to `provider/model` (or a bare model id) to choose another. The
+side chat reads only the current transcript, writes nothing to disk or the
+session, and stages a summary in the editor with `Alt+S` or `/btw send`. It is
+unavailable inside a Fabric worker. See [docs/btw.md](docs/btw.md).
 
 ### Project context
 
