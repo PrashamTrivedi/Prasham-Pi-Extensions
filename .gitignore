@@ -8,3 +8,4 @@ coverage/
 pi-fabric.config.json
 cloudflare-ai-usage.config.json
 !examples/*.json
+.playwright-cli/
