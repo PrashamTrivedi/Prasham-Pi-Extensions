@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderBtwView, type BtwTheme, type BtwViewInput } from "../../extensions/btw/view.ts";
+import { renderBtwPanel, renderBtwView, type BtwTheme, type BtwViewInput } from "../../extensions/btw/view.ts";
 import type { BtwSideMessage } from "../../extensions/btw/prompt.ts";
 
 const theme: BtwTheme = {
   fg: (_color, text) => text,
+  bg: (_color, text) => text,
   bold: (text) => text,
 };
 
@@ -95,5 +96,62 @@ describe("renderBtwView", () => {
     const result = renderBtwView(input({ inputLines: ["1", "2", "3", "4", "5", "6"] }), theme, 80, 30);
     expect(result.bodyRows).toBe(30 - 2 - 6 - 2);
     expect(result.lines.length).toBe(30);
+  });
+});
+
+describe("renderBtwPanel", () => {
+  test("renders a framed, background-filled panel at exactly width × height", () => {
+    const result = renderBtwPanel(input(), theme, 80, 24);
+    expect(result.lines.length).toBe(24);
+    expect(result.lines.every((line) => visibleWidth(line) === 80)).toBe(true);
+    const text = result.lines.join("\n");
+    expect(text).toContain("╭");
+    expect(text).toContain("╰");
+    expect(text).toContain("◆ BTW · side chat");
+    expect(text).toContain("opencode-go/beam-free");
+    expect(text).toContain("You");
+    expect(text).toContain("alt+s summary");
+  });
+
+  test("keeps the editor inside the frame", () => {
+    const result = renderBtwPanel(input({ inputLines: [" > ask something"] }), theme, 80, 24);
+    expect(result.lines.join("\n")).toContain("> ask something");
+  });
+
+  test("scrolls the transcript but keeps the editor fixed", () => {
+    const many: BtwSideMessage[] = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: `message ${index} `.repeat(12),
+    }));
+    const top = renderBtwPanel(input({ messages: many, inputLines: [" > still here"], offset: 0 }), theme, 80, 30);
+    expect(top.maxOffset).toBeGreaterThan(0);
+    expect(top.lines.join("\n")).toContain("message 0");
+    expect(top.lines.join("\n")).toContain("> still here");
+    const bottom = renderBtwPanel(
+      input({ messages: many, inputLines: [" > still here"], offset: top.maxOffset }),
+      theme,
+      80,
+      30,
+    );
+    expect(bottom.lines.join("\n")).toContain("message 19");
+    expect(bottom.lines.join("\n")).toContain("> still here");
+  });
+
+  test("shows the streaming caret and a notice in the footer", () => {
+    const result = renderBtwPanel(
+      input({ streaming: true, notice: "Transcript truncated: 2 older blocks omitted." }),
+      theme,
+      100,
+      24,
+    );
+    expect(result.lines.join("\n")).toContain("▍");
+    expect(result.lines.join("\n")).toContain("Transcript truncated");
+  });
+
+  test("survives a tiny panel without dropping the input", () => {
+    const result = renderBtwPanel(input({ inputLines: [" > tiny", "second"] }), theme, 60, 8);
+    expect(result.lines.length).toBe(8);
+    expect(result.lines.every((line) => visibleWidth(line) === 60)).toBe(true);
+    expect(result.lines.join("\n")).toContain("tiny");
   });
 });

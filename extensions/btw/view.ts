@@ -4,23 +4,15 @@
  * without a terminal.
  */
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { ThemeBg, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { fitScreen } from "../shared/full-screen.ts";
+import { renderPanel } from "../shared/panel.ts";
 import type { BtwSideMessage } from "./prompt.ts";
 import { stripControls } from "./text.ts";
 
-export type BtwColor =
-  | "text"
-  | "accent"
-  | "muted"
-  | "dim"
-  | "success"
-  | "error"
-  | "warning"
-  | "border"
-  | "borderAccent";
-
 export interface BtwTheme {
-  fg(color: BtwColor, text: string): string;
+  fg(color: ThemeColor, text: string): string;
+  bg(color: ThemeBg, text: string): string;
   bold(text: string): string;
 }
 
@@ -75,7 +67,46 @@ function bodyLines(theme: BtwTheme, messages: readonly BtwSideMessage[], streami
   return lines;
 }
 
-/** Render exactly `height` lines for the side chat. */
+/**
+ * Render the docked side panel: the shared framed/background panel with the
+ * transcript window and a fixed editor at the bottom. Every line is exactly
+ * `width` columns and there are exactly `height` rows.
+ */
+export function renderBtwPanel(input: BtwViewInput, theme: BtwTheme, width: number, height: number): BtwViewResult {
+  const renderWidth = Math.max(1, width);
+  const renderHeight = Math.max(8, Math.floor(height));
+  // Two frame borders plus the single leading space `renderPanel` adds per row.
+  const contentWidth = Math.max(1, renderWidth - 3);
+  // Top border + body + footer rule + footer + bottom border.
+  const bodyRows = Math.max(1, renderHeight - 4);
+  let inputLines = input.inputLines.length > 0 ? [...input.inputLines] : [""];
+  // Keep at least one transcript row and the blank separator on tiny panels.
+  const maxInput = Math.max(1, bodyRows - 2);
+  if (inputLines.length > maxInput) inputLines = inputLines.slice(-maxInput);
+  const transcriptRows = Math.max(1, bodyRows - inputLines.length - 1);
+
+  const transcript = bodyLines(theme, input.messages, input.streaming, contentWidth);
+  const maxOffset = Math.max(0, transcript.length - transcriptRows);
+  const offset = Math.min(Math.max(0, Math.floor(input.offset)), maxOffset);
+  const visible = transcript.slice(offset, offset + transcriptRows);
+  while (visible.length < transcriptRows) visible.push("");
+  const body = [...visible, "", ...inputLines];
+  while (body.length < bodyRows) body.push("");
+
+  const keys = "enter ask · alt+s summary · pgup/pgdn scroll · esc close";
+  const state = input.notice || input.status;
+  const footer = truncateToWidth(state ? `${state}  ${keys}` : keys, contentWidth);
+  const panel = renderPanel(theme, renderWidth, {
+    title: "◆ BTW · side chat",
+    right: input.model,
+    body: body.slice(0, bodyRows),
+    footer,
+    limit: bodyRows,
+  });
+  return { lines: panel.lines, maxOffset, bodyRows: transcriptRows };
+}
+
+/** Render exactly `height` lines for the full-window fallback. */
 export function renderBtwView(input: BtwViewInput, theme: BtwTheme, width: number, height: number): BtwViewResult {
   const renderWidth = Math.max(1, width);
   const renderHeight = Math.max(6, Math.floor(height));

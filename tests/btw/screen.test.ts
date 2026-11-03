@@ -1,17 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { TUI } from "@earendil-works/pi-tui";
-import { BtwScreen, type BtwEditor, type BtwScreenState } from "../../extensions/btw/screen.ts";
+import { BtwScreen, type BtwEditor, type BtwScreenOptions, type BtwScreenState } from "../../extensions/btw/screen.ts";
 import type { BtwTheme } from "../../extensions/btw/view.ts";
 
-const theme: BtwTheme = { fg: (_color, text) => text, bold: (text) => text };
+const theme: BtwTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
 
 class FakeEditor implements BtwEditor {
   focused = false;
   text = "";
+  lastWidth = 0;
   onSubmit?: (text: string) => void;
   onChange?: (text: string) => void;
   invalidate(): void {}
-  render(): string[] {
+  render(width: number): string[] {
+    this.lastWidth = width;
     return [`> ${this.text}`];
   }
   handleInput(data: string): void {
@@ -32,7 +34,7 @@ class FakeEditor implements BtwEditor {
   }
 }
 
-function harness(overrides: Partial<BtwScreenState> = {}) {
+function harness(overrides: Partial<BtwScreenState> = {}, options: Partial<BtwScreenOptions> = {}) {
   const state: BtwScreenState = {
     model: "opencode-go/beam-free",
     messages: [{ role: "assistant", text: "The parser skips thinking. [m2]" }],
@@ -53,6 +55,7 @@ function harness(overrides: Partial<BtwScreenState> = {}) {
     onAsk: (question) => asked.push(question),
     onSummary: () => { summaries += 1; },
     onClose: () => { closes += 1; },
+    ...options,
   });
   return { screen, state, editor, asked, summaries: () => summaries, closes: () => closes, renders: () => renders };
 }
@@ -110,7 +113,37 @@ describe("BtwScreen", () => {
     editor.text = "typed question";
     const lines = screen.render(80);
     expect(lines.length).toBe(27);
+    expect(editor.lastWidth).toBe(80);
     expect(lines.join("\n")).toContain("typed question");
+  });
+
+  test("panel mode renders the panel height and inner editor width", () => {
+    const { screen, editor } = harness({}, { mode: "panel", height: () => 20 });
+    editor.text = "typed in panel";
+    const lines = screen.render(60);
+    expect(lines.length).toBe(20);
+    expect(editor.lastWidth).toBe(57);
+    expect(lines.every((line) => line.length <= 60)).toBe(true);
+    expect(lines.join("\n")).toContain("◆ BTW · side chat");
+    expect(lines.join("\n")).toContain("typed in panel");
+  });
+
+  test("panel mode scrolls the transcript and keeps the editor", () => {
+    const many = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      text: `message ${index} `.repeat(12),
+    }));
+    const { screen, editor } = harness({ messages: many }, { mode: "panel", height: () => 24 });
+    editor.text = "still here";
+    screen.render(70);
+    const bottom = screen.getState();
+    expect(bottom.maxOffset).toBeGreaterThan(0);
+    screen.handleInput("\x1b[5~");
+    const up = screen.getState();
+    expect(up.offset).toBeLessThan(bottom.maxOffset);
+    const lines = screen.render(70);
+    expect(lines.length).toBe(24);
+    expect(lines.join("\n")).toContain("still here");
   });
 
   test("PageDown moves the body and PageUp returns", () => {

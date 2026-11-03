@@ -12,8 +12,9 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import { windowHeight } from "../shared/full-screen.ts";
+import { panelHeight } from "./layout.ts";
 import type { BtwSideMessage } from "./prompt.ts";
-import { renderBtwView, type BtwTheme } from "./view.ts";
+import { renderBtwPanel, renderBtwView, type BtwTheme } from "./view.ts";
 
 /** Shared mutable state between the command controller and the screen. */
 export interface BtwScreenState {
@@ -43,6 +44,10 @@ export interface BtwScreenOptions {
   onAsk: (question: string) => void;
   onSummary: () => void;
   onClose: () => void;
+  /** Full-window fallback or the docked side panel. Default: full. */
+  mode?: "full" | "panel";
+  /** Rows to render. Defaults to `windowHeight` (full) or `panelHeight` (panel). */
+  height?: (rows: number) => number;
   /** Test seam; production creates a Pi `Editor`. */
   editor?: BtwEditor;
   /** Rows of the input editor kept visible; the cursor sits at the bottom. */
@@ -56,6 +61,8 @@ export class BtwScreen implements Component, Focusable {
   private readonly onAsk: BtwScreenOptions["onAsk"];
   private readonly onSummary: BtwScreenOptions["onSummary"];
   private readonly onClose: BtwScreenOptions["onClose"];
+  private readonly mode: "full" | "panel";
+  private readonly heightOf: (rows: number) => number;
   private readonly editor: BtwEditor;
   private readonly maxInputRows: number;
   private offset = 0;
@@ -70,6 +77,8 @@ export class BtwScreen implements Component, Focusable {
     this.onAsk = options.onAsk;
     this.onSummary = options.onSummary;
     this.onClose = options.onClose;
+    this.mode = options.mode ?? "full";
+    this.heightOf = options.height ?? (this.mode === "panel" ? panelHeight : windowHeight);
     this.maxInputRows = Math.max(1, options.maxInputRows ?? 5);
     this.editor = options.editor ?? new Editor(this.tui, editorTheme(options.theme), { paddingX: 1 });
     this.editor.onSubmit = (value) => this.submit(value);
@@ -140,23 +149,23 @@ export class BtwScreen implements Component, Focusable {
   }
 
   render(width: number): string[] {
-    const height = windowHeight(this.tui.terminal.rows);
-    const rendered = this.editor.render(width);
+    const height = this.heightOf(this.tui.terminal.rows);
+    // The panel frame consumes two borders and one leading space per row.
+    const contentWidth = this.mode === "panel" ? Math.max(1, width - 3) : width;
+    const rendered = this.editor.render(contentWidth);
     const inputLines = rendered.length > this.maxInputRows ? rendered.slice(-this.maxInputRows) : rendered;
-    const view = renderBtwView(
-      {
-        model: this.state.model,
-        messages: this.state.messages,
-        streaming: this.state.streaming,
-        status: this.state.status,
-        notice: this.state.notice,
-        inputLines,
-        offset: this.follow ? Number.MAX_SAFE_INTEGER : this.offset,
-      },
-      this.theme,
-      width,
-      height,
-    );
+    const payload = {
+      model: this.state.model,
+      messages: this.state.messages,
+      streaming: this.state.streaming,
+      status: this.state.status,
+      notice: this.state.notice,
+      inputLines,
+      offset: this.follow ? Number.MAX_SAFE_INTEGER : this.offset,
+    };
+    const view = this.mode === "panel"
+      ? renderBtwPanel(payload, this.theme, width, height)
+      : renderBtwView(payload, this.theme, width, height);
     this.lastMaxOffset = view.maxOffset;
     this.lastBodyRows = view.bodyRows;
     this.offset = this.follow ? view.maxOffset : Math.min(this.offset, view.maxOffset);

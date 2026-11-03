@@ -9,8 +9,9 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen, fullScreenOpen } from "../shared/full-screen.ts";
+import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen } from "../shared/full-screen.ts";
 import { accumulateNested, nestedHeaders, type NestedUsage } from "../shared/nested.ts";
+import { BTW_OVERLAY_OPTIONS, btwMode, panelHeight, terminalColumns, terminalRows } from "./layout.ts";
 import { modelLabel, outputLimit, resolveBtwModels, type BtwModelResolution } from "./model.ts";
 import {
   buildBtwQuestion,
@@ -284,14 +285,18 @@ async function openBtw(ctx: ExtensionContext, initial?: string): Promise<void> {
     })();
   };
 
-  beginFullScreen();
+  const mode = btwMode(terminalColumns(process.stdout.columns), terminalRows(process.stdout.rows));
+  const overlay = mode === "panel";
+  if (!overlay) beginFullScreen();
   try {
-    ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
+    if (!overlay) ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
     await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
       screen = new BtwScreen({
         tui,
         theme,
         state,
+        mode,
+        ...(overlay ? { height: panelHeight } : {}),
         onAsk: ask,
         onSummary: () => {
           outcome.value = "summary";
@@ -307,18 +312,15 @@ async function openBtw(ctx: ExtensionContext, initial?: string): Promise<void> {
       });
       if (initial?.trim()) queueMicrotask(() => ask(initial.trim()));
       return screen;
-    });
+    }, overlay ? { overlay: true, overlayOptions: { ...BTW_OVERLAY_OPTIONS } } : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    notify(ctx, `BTW could not open the window: ${message}`, "error");
+    notify(ctx, `BTW could not open: ${message}`, "error");
   } finally {
     closed = true;
     abort?.abort();
     screen = undefined;
-    endFullScreen();
-    if (!fullScreenOpen()) {
-      // Fabric's refresh timer restores its rows; no other cleanup is needed.
-    }
+    if (!overlay) endFullScreen();
   }
 
   if (outcome.value === "summary") {
