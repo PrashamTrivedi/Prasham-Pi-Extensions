@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptPaneSpec, type TranscriptSource } from "./ui.ts";
+import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen, fitScreen, fullScreenOpen, windowHeight } from "../shared/full-screen.ts";
 import { assignHues, buildTree, renderAgentRows, type AgentRow, type AgentSnapshot } from "./agents.ts";
 import { Type, type Static } from "typebox";
 
@@ -44,8 +45,6 @@ export type FabricState = { rootId: string; repo: string; createdAt: string; con
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const LEGACY_CONFIG_PATH = join(dirname(ENTRY_PATH), "config.json");
 const ROOT_ENV = "PI_FABRIC_ROOT";
-/** Widget key for the agent rows below the prompt. */
-const AGENTS_WIDGET = "pi-fabric-agents";
 const AGENT_ENV = "PI_FABRIC_AGENT";
 const MODEL_ENV = "PI_FABRIC_MODEL";
 const DEFAULT_CONFIG: FabricConfig = { maxActiveAgents: 6, models: {} };
@@ -373,19 +372,6 @@ function resultText(agent: FabricAgent): string {
   return readFileSync(agent.resultPath, "utf8");
 }
 
-/**
- * Rows a full-window custom screen may draw. Pi keeps its own footer below the
- * screen: cwd/branch, context+model, and one status row (every extension status
- * shares that row). Filling the whole terminal scrolls the first rows out of view.
- */
-const PI_FOOTER_ROWS = 3;
-function windowHeight(rows: number): number { return Math.max(8, rows - PI_FOOTER_ROWS); }
-/** Pads or trims a screen to exactly the window height, so nothing scrolls off. */
-function fitScreen(lines: readonly string[], height: number, width: number): string[] {
-  const sized = lines.length >= height ? lines.slice(0, height) : [...lines, ...Array<string>(height - lines.length).fill("")];
-  return sized.map((line) => truncateToWidth(line, width));
-}
-
 export default function piFabric(pi: ExtensionAPI) {
   // Resolve once per process. An explicitly selected, unreadable, or malformed config is fatal instead of silently changing policy.
   const configResolution = resolveConfig();
@@ -402,8 +388,6 @@ export default function piFabric(pi: ExtensionAPI) {
   const collapsed = new Set<string>();
   /** Group ids whose members are listed; spawn batches stay one row until expanded. */
   const expandedGroups = new Set<string>();
-  /** Depth of open full-window screens; while any is open the rows release their space. */
-  let screenDepth = 0;
 
   function views(agents: FabricAgent[], includePatch = false): FabricAgentView[] {
     return agents.map(agent => {
@@ -616,11 +600,13 @@ export default function piFabric(pi: ExtensionAPI) {
    * beside the interactive area, so leaving them up would clip the screen's top.
    */
   async function withScreen<T>(ctx: ExtensionContext, run: () => Promise<T>): Promise<T> {
-    screenDepth += 1;
-    ctx.ui.setWidget(AGENTS_WIDGET, undefined);
-    try { return await run(); } finally {
-      screenDepth -= 1;
-      if (screenDepth === 0) updateAgents(ctx);
+    beginFullScreen();
+    try {
+      ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
+      return await run();
+    } finally {
+      endFullScreen();
+      if (!fullScreenOpen()) updateAgents(ctx);
     }
   }
   function ensureRoot(ctx: ExtensionContext): string {
@@ -645,19 +631,19 @@ export default function piFabric(pi: ExtensionAPI) {
     refreshTimer = setInterval(() => { try { updateAgents(ctx); } catch { /* Retry next tick; never interrupt editing. */ } }, 750);
   }
   function updateAgents(ctx: ExtensionContext): void {
-    if (ctx.mode !== "tui" || activeAgentId() || screenDepth > 0) return;
-    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setWidget(AGENTS_WIDGET, undefined); return; }
+    if (ctx.mode !== "tui" || activeAgentId() || fullScreenOpen()) return;
+    if (!rootId || !existsSync(statePath(rootId))) { ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined); return; }
     const state = loadState(rootId);
     const agents = Object.values(state.agents);
     const live = liveAgents(agents);
     // The rows are the only always-on surface: they appear with the first child and
     // disappear again when the main chat is alone.
     if (!live.length) {
-      ctx.ui.setWidget(AGENTS_WIDGET, undefined);
+      ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
     } else {
       // The compact rows keep every batch on one line; expanding is a `/agents` affordance.
       const rows = buildTree({ agents: agentSnapshots(state, sessionIndex()), main: mainSnapshot(ctx), now: Date.now() });
-      ctx.ui.setWidget(AGENTS_WIDGET, (_tui, theme) => ({ invalidate() { /* rows are rebuilt per tick */ }, render: (width) => renderAgentRows(rows, theme, width) }), { placement: "belowEditor" });
+      ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, (_tui, theme) => ({ invalidate() { /* rows are rebuilt per tick */ }, render: (width) => renderAgentRows(rows, theme, width) }), { placement: "belowEditor" });
     }
     // Result entries are recorded for every run, including ones already gone from the rows.
     for (const agent of agents) {

@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The loop that earns a new session — natural compact</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --paper: #f1eee7;
+    --paper-2: #f7f5f0;
+    --surface: #fbfaf6;
+    --ink: #17181a;
+    --ink-2: #3b3c3d;
+    --muted: #6f6d66;
+    --line: rgba(23, 24, 26, 0.14);
+    --line-2: rgba(23, 24, 26, 0.07);
+    --accent: #a33b26;
+    --accent-ink: #7d2b1a;
+    --accent-10: rgba(163, 59, 38, 0.10);
+    --accent-06: rgba(163, 59, 38, 0.06);
+    --display: "Sitka Display", "Sitka Text", Constantia, Cambria, "Iowan Old Style", "Palatino Linotype", serif;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, "SF Mono", monospace;
+    --prose: 700px;
+    --wide: 940px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; z-index: 60;
+    opacity: 0.35;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.38'/%3E%3C/svg%3E");
+    mix-blend-mode: multiply;
+  }
+
+  ::selection { background: var(--accent-10); }
+
+  #progress {
+    position: fixed; top: 0; left: 0; height: 2px; width: 0;
+    background: var(--accent); z-index: 80;
+    transition: width 0.12s linear;
+  }
+
+  .wrap { max-width: var(--wide); margin: 0 auto; padding: 0 28px 140px; }
+  .prose { max-width: var(--prose); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.22fr 0.78fr;
+    gap: clamp(28px, 5vw, 64px);
+    align-items: end;
+    padding: clamp(64px, 11vh, 128px) 0 clamp(36px, 6vh, 64px);
+    border-bottom: 1px solid var(--line);
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--accent-ink); margin: 0 0 26px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: pulse 2.8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.28; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(38px, 6.2vw, 66px);
+    line-height: 1.02;
+    letter-spacing: -0.022em;
+    margin: 0 0 24px;
+    max-width: 15ch;
+  }
+  h1 em { font-style: italic; color: var(--accent-ink); }
+  .lede {
+    font-size: clamp(16.5px, 1.6vw, 18.5px);
+    color: var(--ink-2); margin: 0; max-width: 46ch;
+  }
+  .hero-side { padding-bottom: 6px; }
+  .glance { border-top: 1px solid var(--line); }
+  .glance div {
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 11px 0; border-bottom: 1px solid var(--line-2);
+    font-size: 13.5px;
+  }
+  .glance dt { color: var(--muted); margin: 0; }
+  .glance dd { margin: 0; font-family: var(--mono); font-size: 12.5px; letter-spacing: -0.01em; }
+  .glance-note {
+    font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5;
+  }
+
+  /* ---------- sections ---------- */
+  section { padding-top: clamp(52px, 9vh, 92px); }
+  .sec-head { max-width: var(--prose); margin-bottom: 26px; }
+  .sec-num {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    color: var(--accent-ink); display: block; margin-bottom: 12px;
+  }
+  h2 {
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(26px, 3.4vw, 36px); line-height: 1.14;
+    letter-spacing: -0.018em; margin: 0 0 14px;
+  }
+  h3 {
+    font-family: var(--sans); font-weight: 650; font-size: 15.5px;
+    letter-spacing: -0.005em; margin: 30px 0 8px;
+  }
+  p { margin: 0 0 16px; max-width: var(--prose); }
+  .kicker { color: var(--muted); font-size: 16px; max-width: 58ch; }
+  strong { font-weight: 650; }
+  code {
+    font-family: var(--mono); font-size: 0.84em;
+    background: rgba(23, 24, 26, 0.055); padding: 1.5px 5px; border-radius: 4px;
+    color: var(--ink-2); white-space: nowrap;
+  }
+
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.7s cubic-bezier(.16,1,.3,1), transform 0.7s cubic-bezier(.16,1,.3,1); }
+  .reveal.in { opacity: 1; transform: none; }
+
+  /* ---------- callouts ---------- */
+  .callout {
+    border-left: 2px solid var(--line); padding: 2px 0 2px 20px;
+    margin: 26px 0; max-width: var(--prose); font-size: 16px; color: var(--ink-2);
+  }
+  .callout .label {
+    display: block; font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .callout.insight { border-left-color: var(--accent); }
+  .callout.insight .label { color: var(--accent-ink); }
+  .callout.gotcha { border-left-style: double; border-left-width: 4px; border-left-color: var(--accent); }
+
+  .term {
+    border-bottom: 1px dotted var(--muted); cursor: help; position: relative;
+  }
+  .term .def {
+    position: absolute; left: 0; bottom: 135%; width: 260px; z-index: 30;
+    background: var(--ink); color: var(--paper-2); font-size: 13px; line-height: 1.5;
+    padding: 10px 12px; border-radius: 3px; opacity: 0; pointer-events: none;
+    transition: opacity 0.16s ease, transform 0.16s ease; transform: translateY(4px);
+    font-family: var(--sans); font-weight: 400;
+  }
+  .term:hover .def, .term:focus .def { opacity: 1; transform: none; }
+
+  /* ---------- panel / widget frame ---------- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: clamp(18px, 3vw, 30px);
+    margin: 30px 0;
+  }
+  .panel-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 18px; flex-wrap: wrap; margin-bottom: 20px;
+    border-bottom: 1px solid var(--line-2); padding-bottom: 12px;
+  }
+  .panel-title { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); }
+  .panel-out { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); }
+
+  /* ---------- drift demo ---------- */
+  .strip { display: grid; grid-template-columns: repeat(30, 1fr); gap: 3px; margin: 4px 0 20px; }
+  .turn {
+    height: 44px; border: 1px solid var(--line);
+    background: var(--surface); position: relative; overflow: hidden;
+    transition: background 0.35s ease, border-color 0.35s ease, opacity 0.35s ease;
+    flex: none;
+  }
+  .turn .fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent-06); transition: height 0.35s ease; }
+  .turn.stale { background: repeating-linear-gradient(135deg, transparent, transparent 3px, rgba(23,24,26,.10) 3px, rgba(23,24,26,.10) 4px); }
+  .turn.fresh { border-color: rgba(163,59,38,.5); background: var(--accent-10); }
+  .turn .tick { position: absolute; bottom: 3px; left: 0; right: 0; text-align: center; font-family: var(--mono); font-size: 8px; color: var(--muted); }
+  .legend { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 12px; height: 12px; border: 1px solid var(--line); display: inline-block; }
+  .legend i.s { background: repeating-linear-gradient(135deg, transparent, transparent 2px, rgba(23,24,26,.16) 2px, rgba(23,24,26,.16) 3px); }
+  .legend i.f { background: var(--accent-10); border-color: rgba(163,59,38,.45); }
+
+  .ctl-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 6px; }
+  .ctl-row label { font-size: 13px; color: var(--muted); min-width: 0; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; flex: 1; min-width: 160px;
+    height: 2px; background: var(--line); outline: none; border-radius: 2px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--surface); border: 1.5px solid var(--accent); cursor: grab;
+    transition: transform 0.15s ease;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.18); cursor: grabbing; }
+  input[type=range]::-moz-range-thumb {
+    width: 13px; height: 13px; border-radius: 50%; background: var(--surface);
+    border: 1.5px solid var(--accent); cursor: grab;
+  }
+  .mono-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink); min-width: 56px; text-align: right; }
+
+  .statline { display: flex; gap: 36px; flex-wrap: wrap; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line-2); }
+  .stat { font-family: var(--mono); }
+  .stat b { display: block; font-family: var(--mono); font-size: 22px; font-weight: 500; letter-spacing: -0.03em; }
+  .stat span { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+
+  /* ---------- loop map ---------- */
+  .lanes { display: grid; gap: 30px; margin: 8px 0 4px; }
+  .lane-label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 10px;
+    margin-bottom: 12px;
+  }
+  .lane-label::after { content: ""; flex: 1; height: 1px; background: var(--line-2); }
+  .nodes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .node {
+    font-family: var(--sans); font-size: 13px; text-align: left;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); padding: 9px 13px; border-radius: 2px;
+    cursor: pointer; position: relative; transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  }
+  .node .idx { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-right: 7px; }
+  .node:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .node.active { background: var(--accent); border-color: var(--accent); color: #fdfaf6; }
+  .node.active .idx { color: rgba(253,250,246,.7); }
+  .node.done { border-color: rgba(163,59,38,.35); }
+  .bridge {
+    display: flex; align-items: center; gap: 12px; margin: 4px 0;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-ink);
+  }
+  .bridge .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--accent), rgba(163,59,38,.2)); }
+
+  /* a visible return arc so the inner lane reads as a loop, not a list */
+  .loopback {
+    margin: 16px 0 24px; height: 16px; border: 1px solid rgba(23,24,26,.18);
+    border-top: 0; border-radius: 0 0 10px 10px; position: relative;
+  }
+  .loopback::before {
+    content: ""; position: absolute; left: -4px; top: -6px;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 6px solid rgba(23,24,26,.30);
+  }
+  .loopback span {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--surface); padding: 0 10px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.11em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  .lane-inner { padding-bottom: 6px; }
+  .lane-outer .nodes .node { background: var(--paper-2); }
+  .rail {
+    margin-top: 22px; padding-top: 12px; border-top: 1px dashed var(--line);
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.06em;
+    color: var(--muted); line-height: 1.7;
+  }
+  .rail b { color: var(--accent-ink); font-weight: 500; }
+
+  .step-body { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 20px; }
+  .step-top { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  .step-name { font-family: var(--display); font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .chip {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 3px 8px; border: 1px solid var(--line); color: var(--muted); border-radius: 2px; white-space: nowrap;
+  }
+  .chip.proven { border-color: rgba(23,24,26,.35); color: var(--ink-2); }
+  .chip.partial { border-style: dashed; color: var(--ink-2); }
+  .chip.unproven { border-color: rgba(163,59,38,.5); color: var(--accent-ink); background: var(--accent-06); }
+  .step-q { font-family: var(--display); font-style: italic; font-size: 17.5px; color: var(--ink-2); margin: 0 0 14px; max-width: 60ch; }
+  .step-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 30px; margin-top: 18px; }
+  .field .k {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); display: block; margin-bottom: 4px;
+  }
+  .field .v { font-size: 14.5px; color: var(--ink-2); line-height: 1.55; }
+  .field .v em { color: var(--accent-ink); font-style: normal; }
+  .stepper-nav { display: flex; gap: 10px; align-items: center; margin-top: 24px; }
+  .btn {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    background: transparent; border: 1px solid var(--line); color: var(--ink);
+    padding: 9px 15px; cursor: pointer; border-radius: 2px;
+    transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.12s ease;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--ink); }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  .btn.accent { border-color: var(--accent); color: var(--accent-ink); }
+  .stepper-count { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-left: auto; }
+
+  /* ---------- actors ---------- */
+  .actors { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 28px 0; }
+  .actor { background: var(--surface); padding: 22px 22px 20px; }
+  .actor .role { font-family: var(--mono); font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--accent-ink); }
+  .actor h3 { margin: 6px 0 10px; font-family: var(--display); font-size: 20px; font-weight: 600; }
+  .actor p { font-size: 14px; color: var(--ink-2); margin: 0 0 12px; }
+  .actor .cap { font-size: 12.5px; border-top: 1px solid var(--line-2); padding-top: 10px; color: var(--muted); }
+  .actor .cap b { color: var(--ink-2); font-weight: 600; }
+
+  /* ---------- verdict lab ---------- */
+  .verdicts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+  .verdicts .btn { font-family: var(--sans); font-size: 13px; letter-spacing: 0; text-transform: none; padding: 8px 14px; }
+  .verdicts .btn.on { background: var(--ink); color: var(--paper-2); border-color: var(--ink); }
+  .result { display: grid; grid-template-columns: 132px 1fr; gap: 0; border-top: 1px solid var(--line-2); }
+  .result > div { padding: 13px 0; border-bottom: 1px solid var(--line-2); font-size: 14.5px; }
+  .result .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding-top: 16px; }
+  .result .v.advance { color: var(--accent-ink); font-weight: 650; }
+  .result .v.escalate { font-weight: 650; }
+  .result .v.stop { color: var(--muted); }
+
+  /* ---------- simulator ---------- */
+  .sim-track { position: relative; height: 150px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 26px 0 6px; }
+  .sim-area { position: absolute; inset: 0; }
+  .sim-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .sim-legend { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 22px; }
+  .sim-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
+  .sim-legend i.dot { border-radius: 50%; background: var(--accent); }
+  .sim-legend i.ring { border-radius: 50%; border: 1px solid var(--accent); }
+  .sim-legend i.rule { width: 1px; height: 12px; background: var(--accent); opacity: 0.55; }
+  .threshold { position: absolute; left: 0; right: 0; height: 1px; border-top: 1px dashed var(--line); }
+  .threshold span {
+    position: absolute; right: 4px; top: -15px; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: 0.06em; color: var(--muted); background: var(--surface); padding: 0 3px;
+  }
+  .sim-boundary { position: absolute; bottom: 0; width: 1px; height: 9px; background: var(--line); }
+  .sim-ask {
+    position: absolute; bottom: 0; width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 4px var(--accent-10);
+  }
+  .sim-ask.declined { background: var(--surface); border: 1px solid var(--accent); box-shadow: none; }
+  .sim-switch { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); opacity: 0.55; }
+  .sim-switch span {
+    position: absolute; top: 2px; left: 5px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.06em; color: var(--accent-ink); white-space: nowrap;
+  }
+  .sim-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: 0.06em; }
+  .toggles { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+  .tog { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+  .tog input { appearance: none; width: 34px; height: 18px; border-radius: 9px; background: var(--line); position: relative; cursor: pointer; transition: background 0.2s ease; }
+  .tog input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); transition: transform 0.2s cubic-bezier(.16,1,.3,1); }
+  .tog input:checked { background: var(--accent); }
+  .tog input:checked::after { transform: translateX(16px); }
+
+  /* ---------- risk register ---------- */
+  .risks { border-top: 1px solid var(--line); margin: 26px 0 0; }
+  .risk { display: grid; grid-template-columns: 46px 1fr; gap: 0 18px; padding: 20px 0; border-bottom: 1px solid var(--line-2); }
+  .risk .id { font-family: var(--mono); font-size: 11px; color: var(--accent-ink); padding-top: 3px; letter-spacing: 0.06em; }
+  .risk h3 { margin: 0 0 6px; font-size: 16px; }
+  .risk p { font-size: 14.5px; color: var(--ink-2); margin: 0; max-width: 66ch; }
+  .risk .consequence { font-size: 13px; color: var(--muted); margin-top: 7px; }
+  .risk .consequence b { color: var(--accent-ink); font-weight: 600; }
+
+  /* ---------- decisions ---------- */
+  .decisions { counter-reset: d; margin: 26px 0 0; }
+  .decision { display: grid; grid-template-columns: 30px 1fr; gap: 0 16px; padding: 18px 0; border-top: 1px solid var(--line-2); }
+  .decision::before { counter-increment: d; content: "D" counter(d); font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 4px; }
+  .decision .q { font-weight: 650; font-size: 15.5px; margin: 0 0 6px; }
+  .decision .rec { font-size: 14px; color: var(--ink-2); margin: 0; }
+  .decision .rec b { color: var(--accent-ink); font-weight: 650; }
+
+  /* ---------- recap ---------- */
+  .recap { margin-top: clamp(60px, 10vh, 100px); border-top: 2px solid var(--ink); padding-top: 34px; }
+  .recap p { font-family: var(--display); font-size: clamp(21px, 3vw, 29px); line-height: 1.34; letter-spacing: -0.012em; max-width: 19em; margin: 0 0 26px; }
+  .recap p em { font-style: italic; color: var(--accent-ink); }
+  .sources { font-family: var(--mono); font-size: 11.5px; color: var(--muted); line-height: 2; border-top: 1px solid var(--line-2); padding-top: 20px; margin-top: 40px; }
+  .sources span { display: block; }
+  .sources b { color: var(--ink-2); font-weight: 500; }
+
+  @media (max-width: 720px) {
+    .strip { grid-template-columns: repeat(15, 1fr); }
+  }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; align-items: start; }
+    .hero-side { border-top: 1px solid var(--line-2); padding-top: 20px; }
+    .step-grid, .actors, .result { grid-template-columns: 1fr; }
+    .result { border-top: none; }
+    .result .k { padding-bottom: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition-duration: 0.001ms !important; }
+    .reveal { opacity: 1; transform: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div>
+      <p class="eyebrow"><span class="dot"></span>natural compact · loop design</p>
+      <h1>The loop that <em>earns</em> a new session</h1>
+      <p class="lede">A fresh session is the most powerful context reduction available — and the easiest way to lose a half-finished task. So the design isn't a compaction algorithm. It's a loop that has to be granted permission, three separate times, before it is allowed to cut.</p>
+    </div>
+    <div class="hero-side">
+      <dl class="glance">
+        <div><dt>plan status</dt><dd>pre-implementation</dd></div>
+        <div><dt>gates to pass</dt><dd>3</dd></div>
+        <div><dt>actors with hands</dt><dd>4</dd></div>
+        <div><dt>unproven joints</dt><dd>4</dd></div>
+        <div><dt>thresholds</dt><dd>50% / 60%</dd></div>
+      </dl>
+      <p class="glance-note">Dissection of <code>taskNotes/natural-compact</code> as planned, plus the loop decisions the plan still leaves open.</p>
+    </div>
+  </header>
+
+  <!-- 01 -->
+  <section id="s1">
+    <div class="sec-head reveal">
+      <span class="sec-num">01 — the pressure</span>
+      <h2>Context doesn't rot by size. It rots by relevance.</h2>
+      <p class="kicker">Every turn stays in the window whether or not it still matters. Compaction shrinks the pile; it doesn't remove what's in it.</p>
+    </div>
+
+    <div class="reveal">
+      <p>Pi's ordinary compaction rewrites the same conversation into a shorter form. What the plan reaches for is different in kind: start a <strong>new session</strong> that carries only what the next piece of work needs, and leave the old one intact and resumable underneath it.</p>
+      <p>That changes the unit of state from <em>tokens</em> to <em>the session itself</em>. Which is why the interesting problem isn't summarization — it's deciding when a cut is legitimate, and proving the cut lost nothing.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-head">
+        <span class="panel-title">drift · illustrative model, not a measurement</span>
+        <span class="panel-out" id="driftOut">6 of 24 turns still relevant</span>
+      </div>
+      <div class="legend">
+        <span><i class="f"></i>still relevant to the next step</span>
+        <span><i class="s"></i>carried, no longer relevant</span>
+        <span><i></i>not yet written</span>
+      </div>
+      <div class="strip" id="strip" aria-hidden="true"></div>
+      <div class="ctl-row">
+        <label for="turns">turns elapsed</label>
+        <input type="range" id="turns" min="4" max="30" value="24" step="1">
+        <span class="mono-val" id="turnsVal">24</span>
+      </div>
+      <div class="statline">
+        <div class="stat"><b id="driftCarry">18</b><span>turns carried</span></div>
+        <div class="stat"><b id="driftKeep">6</b><span>still relevant</span></div>
+        <div class="stat"><b id="driftRatio">3.0×</b><span>signal-to-noise</span></div>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin:16px 0 0;max-width:64ch">Shape of the pressure, not a Pi measurement: the number of turns a task needs doesn't grow with how long the session has been running.</p>
+    </div>
+
+    <div class="callout insight reveal">
+      <span class="label">the framing that matters</span>
+      If the goal is "less irrelevant context", the loop's success condition is not a smaller window. It's <strong>work continuing after the cut with no loss the human can point at</strong>. The plan says this explicitly: continuity and usage are tracked together, and continuity comes first.
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section id="s2">
+    <div class="sec-head reveal">
+      <span class="sec-num">02 — the shape</span>
+      <h2>Two loops, one seam</h2>
+      <p class="kicker">The plan's decisive constraint: <code>newSession</code> is command-only. The extension cannot begin the last step itself.</p>
+    </div>
+
+    <div class="reveal">
+      <p>That one API fact splits the loop. An <strong>inner loop</strong> runs per turn: measure, gate, propose, adjudicate, offer. It is cheap, redundant, and produces nothing but a UI affordance. An <strong>outer chain</strong> runs only when a human commands it: generate, review, approve, switch, wait. Only the outer chain can cross the session boundary — and only after the human's own action.</p>
+      <p>This is the design I would hold the implementation to, because it makes the dangerous step unreachable by event handlers, timers, and model output.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-head">
+        <span class="panel-title">loop anatomy · click a step</span>
+        <span class="panel-out" id="loopCount">step 1 / 10</span>
+      </div>
+
+      <div class="lanes">
+        <div class="lane-inner">
+          <div class="lane-label">inner loop · per turn · no side effects</div>
+          <div class="nodes" id="innerNodes"></div>
+          <div class="loopback"><span>every later turn re-enters at Measure</span></div>
+        </div>
+        <div class="bridge"><span>the seam</span><span class="line"></span><span>human command only</span></div>
+        <div class="lane-outer" style="padding-top:18px">
+          <div class="lane-label">outer chain · human-commanded · the only way across</div>
+          <div class="nodes" id="outerNodes"></div>
+          <div class="rail"><b>any failure</b> → idle, with a stated reason · no deletions · no interrupted tool run · no queued work discarded</div>
+        </div>
+      </div>
+
+      <div class="step-body">
+        <div class="step-top">
+          <span class="step-name" id="stepName">Measure</span>
+          <span class="chip" id="stepChip">proven api</span>
+        </div>
+        <p class="step-q" id="stepQ"></p>
+        <div class="step-grid">
+          <div class="field"><span class="k">what happens</span><span class="v" id="stepWhat"></span></div>
+          <div class="field"><span class="k">invariant it must hold</span><span class="v" id="stepInv"></span></div>
+          <div class="field"><span class="k">actor</span><span class="v" id="stepActor"></span></div>
+          <div class="field"><span class="k">failure edge</span><span class="v" id="stepFail"></span></div>
+        </div>
+        <div class="stepper-nav">
+          <button class="btn accent" id="prevStep">← prev</button>
+          <button class="btn accent" id="nextStep">next →</button>
+          <span class="stepper-count">arrow keys work too</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout gotcha reveal">
+      <span class="label">consequence worth naming early</span>
+      If the 60% ask cannot actively interrupt at a settled boundary — the plan flags this as unproven — then the honest options are a notification pointing at a command, or blocking the feature. The plan is explicit that presenting a notification is <strong>not</strong> equivalent to the requested active prompt, and that a command-only compromise may not be shipped quietly as if it satisfied the requirement.
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section id="s3">
+    <div class="sec-head reveal">
+      <span class="sec-num">03 — the actors</span>
+      <h2>Four actors, four different hands</h2>
+      <p class="kicker">The loop's safety comes from a separation of powers, not from prompt instructions.</p>
+    </div>
+
+    <div class="actors reveal">
+      <div class="actor">
+        <span class="role">eyes · proposes</span>
+        <h3>The running model</h3>
+        <p>Reads the live branch and proposes two things: is this a boundary, and is the next work new or ongoing. Bounded call, bounded latency.</p>
+        <div class="cap"><b>Can:</b> propose. <b>Cannot:</b> approve, generate the handoff, or switch.</div>
+      </div>
+      <div class="actor">
+        <span class="role">judge · verifies</span>
+        <h3>Decision server → Jev</h3>
+        <p>Answers <code>verified</code>, <code>not_boundary</code>, or <code>uncertain</code> with a work type and a reason. Decides when it and the model disagree.</p>
+        <div class="cap"><b>Can:</b> verify, classify, escalate. <b>Cannot:</b> consent. An empty result is silence, not a yes.</div>
+      </div>
+      <div class="actor">
+        <span class="role">scribe · read-only</span>
+        <h3>The handoff agent</h3>
+        <p>A cheap model, configured once, producing the carry-over text. Read-only is a capability boundary, not a polite instruction: tool-free, or a restricted read interface.</p>
+        <div class="cap"><b>Can:</b> read the branch and bounded referenced files. <b>Cannot:</b> write, shell out, or claim a test ran.</div>
+      </div>
+      <div class="actor">
+        <span class="role">authority · consents</span>
+        <h3>The human</h3>
+        <p>Holds four separate yeses: this boundary is real, this handoff is right, switch now, and — if offered — compact instead.</p>
+        <div class="cap"><b>Can:</b> edit everything, decline anything. <b>Cannot:</b> be replaced by an inferred intent.</div>
+      </div>
+    </div>
+
+    <div class="callout insight reveal">
+      <span class="label">why the separation is load-bearing</span>
+      No actor holds two powers. The model that wants to stop can't certify the stop; the judge can't write the handoff; the scribe can't switch; the human's boundary confirmation is not a switch approval. That's why every failure mode ends in "do nothing, say why" instead of "proceed carefully".
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section id="s4">
+    <div class="sec-head reveal">
+      <span class="sec-num">04 — the judgment</span>
+      <h2>Only one verdict advances the loop</h2>
+      <p class="kicker">The most likely way to break this design is not a crash. It's a verdict that reads like permission.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-head">
+        <span class="panel-title">verdict lab · pick what the judge returns</span>
+        <span class="panel-out" id="verdictOut">verified</span>
+      </div>
+      <div class="verdicts" id="verdictBtns"></div>
+      <div class="result">
+        <div class="k">loop does</div><div class="v" id="vDoes"></div>
+        <div class="k">human sees</div><div class="v" id="vSees"></div>
+        <div class="k">can it switch</div><div class="v" id="vSwitch"></div>
+        <div class="k">the trap</div><div class="v" id="vTrap"></div>
+      </div>
+    </div>
+
+    <div class="reveal">
+      <p>Two rules do almost all the work here. First: <strong>a verdict is only evidence if the contract distinguishes "no matching decision" from "verified"</strong>. An adapter returning <code>{}</code> is not a verified boundary — treating it as one converts a missing judgment into a green light.</p>
+      <p>Second: <strong>uncertainty is routed, not resolved</strong>. Unclear or disagreeing judgments escalate to the human as a boundary question. That question is asked using the same vocabulary as the loop, not as an approval prompt, so the human's answer cannot be laundered into a switch.</p>
+    </div>
+
+    <div class="callout gotcha reveal">
+      <span class="label">operable trap — try the empty verdict</span>
+      Selecting <code>{}</code> in the lab above is the whole argument for Gate 0's third investigation: the plan requires an explicit, typed boundary decision through decision-server before any of this is built. If only a generic verdict can be obtained, the loop's judgment gate is decoration.
+    </div>
+  </section>
+
+  <!-- 05 -->
+  <section id="s5">
+    <div class="sec-head reveal">
+      <span class="sec-num">05 — the knobs</span>
+      <h2>What the cooldown is actually buying</h2>
+      <p class="kicker">After a decline, the loop must wait for both a <em>new</em> boundary and the configured cooldown. Two conditions, because either alone can be gamed by time passing.</p>
+    </div>
+
+    <div class="panel reveal">
+      <div class="panel-head">
+        <span class="panel-title">session simulator · one simulated hour and a half</span>
+        <span class="panel-out" id="simOut"></span>
+      </div>
+      <div class="sim-track" id="simTrack">
+        <div class="sim-area" id="simArea"></div>
+      </div>
+      <div class="sim-axis"><span>0:00</span><span>0:30</span><span>1:00</span><span>1:30</span></div>
+      <div class="sim-legend">
+        <span><i class="rule"></i>context as % of window</span>
+        <span><i class="dot"></i>ask accepted</span>
+        <span><i class="ring"></i>ask declined</span>
+        <span><i class="rule" style="background:var(--line);opacity:1"></i>natural boundary (unverified)</span>
+      </div>
+      <div class="toggles">
+        <label class="tog"><input type="checkbox" id="togAsk60" checked> ask from 60%, not 50%</label>
+        <label class="tog"><input type="checkbox" id="togDecline" checked> human declines the first ask</label>
+      </div>
+      <div class="ctl-row" style="margin-top:16px">
+        <label for="cooldown">cooldown</label>
+        <input type="range" id="cooldown" min="0" max="60" value="15" step="5">
+        <span class="mono-val" id="cooldownVal">15m</span>
+      </div>
+      <div class="statline">
+        <div class="stat"><b id="simAsks">0</b><span>asks presented</span></div>
+        <div class="stat"><b id="simDeclines">0</b><span>declined</span></div>
+        <div class="stat"><b id="simSwitch">—</b><span>cut at</span></div>
+        <div class="stat"><b id="simPeak">—</b><span>peak context</span></div>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin:16px 0 0;max-width:68ch">Simulation of the loop's rules against a fixed boundary schedule and a steady context climb. It shows the trade the cooldown makes; it does not predict real usage.</p>
+    </div>
+
+    <div class="reveal">
+      <p>Slide the cooldown to zero and the loop asks at every boundary it can — the fastest cut, at the price of interrupting a human who just said no. Slide it long and the context walks past 60% untouched, which is the pressure the feature exists to relieve. The plan proposes 15 minutes as a default and explicitly asks for that to be confirmed.</p>
+    </div>
+  </section>
+
+  <!-- 06 -->
+  <section id="s6">
+    <div class="sec-head reveal">
+      <span class="sec-num">06 — the honest part</span>
+      <h2>Four joints this loop rests on</h2>
+      <p class="kicker">These are the plan's Gate 0 items — each one either passes with observable evidence in real Pi, or the path stops and comes back for a scope decision.</p>
+    </div>
+
+    <div class="risks reveal">
+      <div class="risk">
+        <div class="id">J1</div>
+        <div>
+          <h3>Persist a handoff without triggering a turn — plus the exact pending text</h3>
+          <p>The upstream handoff example stages one combined draft. The plan needs the approved handoff saved as context with no model call, and the pending request separately restored to the editor, byte for byte.</p>
+          <p class="consequence"><b>If assumed:</b> the handoff executes itself as a prompt, or the unsent request is flattened into a summary and the human's next action is gone.</p>
+        </div>
+      </div>
+      <div class="risk">
+        <div class="id">J2</div>
+        <div>
+          <h3>An active 60% ask at a settled boundary, with a command-only switch</h3>
+          <p>An event handler may be able to present the question but cannot perform the replacement. The plan demands a real demonstration of the interaction before claiming the behavior.</p>
+          <p class="consequence"><b>If assumed:</b> the requirement is silently downgraded to a notification, and the acceptance criteria pass on a behavior the human never agreed to.</p>
+        </div>
+      </div>
+      <div class="risk">
+        <div class="id">J3</div>
+        <div>
+          <h3>A typed boundary + work-type decision from decision-server through Jev</h3>
+          <p>Today's documented decision contract covers tool events, not natural boundaries. It must return a distinguishable "no matching decision" and a real verdict, and the ownership and deployment of any adapter change sit outside this repository.</p>
+          <p class="consequence"><b>If assumed:</b> an empty adapter result becomes a verified boundary, and the same model that wants to stop certifies its own stop.</p>
+        </div>
+      </div>
+      <div class="risk">
+        <div class="id">J4</div>
+        <div>
+          <h3>Resumability and linking of the old session</h3>
+          <p>A path existing is not resumability. The plan requires a separate resume test to establish what can actually be guaranteed, and forbids switching when the original cannot be safely resumed and linked.</p>
+          <p class="consequence"><b>If assumed:</b> the switch orphans the branch, and the "link to the old session" in every handoff template points at nothing.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 -->
+  <section id="s7">
+    <div class="sec-head reveal">
+      <span class="sec-num">07 — open decisions</span>
+      <h2>Five things I'd want your call on</h2>
+      <p class="kicker">Each of these changes the loop's shape, not its styling. Recommendations are mine; the plan leaves them open on purpose.</p>
+    </div>
+
+    <div class="decisions reveal">
+      <div class="decision">
+        <div>
+          <p class="q">Should the event loop be structurally unable to switch?</p>
+          <p class="rec"><b>Yes.</b> Inner loop ends at "offer"; only a command crosses the seam. This removes an entire class of bug rather than testing for it — and makes J2 a question about UX, not safety.</p>
+        </div>
+      </div>
+      <div class="decision">
+        <div>
+          <p class="q">What exactly does an approval bind to?</p>
+          <p class="rec"><b>A lease on a snapshot</b> — handoff text, source session file, branch head, pending request. Any drift invalidates it and re-confirms; nothing is re-derived silently after the human reads it.</p>
+        </div>
+      </div>
+      <div class="decision">
+        <div>
+          <p class="q">When is the handoff generated?</p>
+          <p class="rec"><b>Lazily</b>, only after the human opens review — so a declined ask costs nothing, and the scribe never runs on a session that was never going to move.</p>
+        </div>
+      </div>
+      <div class="decision">
+        <div>
+          <p class="q">Cooldown default, and is a cooldown time or a boundary count?</p>
+          <p class="rec"><b>15 minutes of wall clock, plus a new boundary identity.</b> Time alone lets a busy session re-ask at the same cut; identity alone re-asks minutes later. Use the simulator above to sanity-check the number.</p>
+        </div>
+      </div>
+      <div class="decision">
+        <div>
+          <p class="q">If the local handoff log can't be written, does the switch block?</p>
+          <p class="rec"><b>Block by default, with a visible, dismissible error and an explicit "switch without the audit record" choice.</b> Written records are a privacy commitment here; a silent failure breaks it before it breaks anything else.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- recap -->
+  <div class="recap reveal">
+    <p>The loop doesn't compact. It <em>qualifies</em> — boundary, judgment, consent — and only then is a fresh session allowed to exist.</p>
+    <p style="font-family:var(--sans);font-size:17px;line-height:1.62;max-width:60ch;letter-spacing:0">Everything expensive in this design is downstream of that sentence: the two-loop split keeps the cut out of reach of an event handler, the separation of powers keeps each actor from certifying its own work, and the failure rules all resolve to "do nothing, say why".</p>
+
+    <div class="sources">
+      <span><b>grounding</b> · taskNotes/natural-compact/taskFindings.md · requirements.md · brainstorm.md</span>
+      <span><b>gates</b> · specs/specs.md · specs/01-feasibility · specs/02-runtime · specs/03-validation</span>
+      <span><b>upstream contract</b> · pi handoff example, getContextUsage, newSession / withSession, sendMessage triggerTurn</span>
+      <span><b>note</b> · diagrams and the simulator illustrate planned rules; the only measured claims in the plan are the ones Gate 0 has yet to collect.</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- progress ---------- */
+  var bar = document.getElementById("progress");
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + "%";
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
+  /* ---------- reveal ---------- */
+  var revealEls = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
+  function showAll() { revealEls.forEach(function (el) { el.classList.add("in"); }); }
+
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e, i) {
+        if (e.isIntersecting) {
+          e.target.style.transitionDelay = Math.min(i * 45, 220) + "ms";
+          e.target.classList.add("in");
+          io.unobserve(e.target);
+        }
+      });
+    }, { rootMargin: "0px 0px -6% 0px", threshold: 0.06 });
+    revealEls.forEach(function (el) { io.observe(el); });
+    // safety: content must never stay invisible because an observer missed
+    setTimeout(showAll, 1500);
+  } else {
+    showAll();
+  }
+
+  /* ---------- 01 drift ---------- */
+  var strip = document.getElementById("strip");
+  var turnsInput = document.getElementById("turns");
+  var MAX = 30;
+
+  for (var i = 0; i < MAX; i++) {
+    var cell = document.createElement("div");
+    cell.className = "turn";
+    var fill = document.createElement("div");
+    fill.className = "fill";
+    var tick = document.createElement("div");
+    tick.className = "tick";
+    cell.appendChild(fill);
+    cell.appendChild(tick);
+    strip.appendChild(cell);
+  }
+
+  // adapted from the plan's framing: the task needs a bounded number of recent
+  // turns; everything older is carried but no longer load-bearing.
+  function driftState(turns, keep) {
+    var fresh = Math.min(keep, turns);
+    var stale = turns - fresh;
+    return { fresh: fresh, stale: stale, staleRatio: fresh ? stale / fresh : 0 };
+  }
+
+  function renderDrift() {
+    var turns = parseInt(turnsInput.value, 10);
+    var keep = 6;
+    var s = driftState(turns, keep);
+    var cells = strip.children;
+    for (var i = 0; i < MAX; i++) {
+      var c = cells[i];
+      c.className = "turn";
+      c.firstChild.style.height = "0%";
+      c.lastChild.textContent = "";
+      if (i < s.stale) { c.classList.add("stale"); }
+      else if (i < turns) {
+        c.classList.add("fresh");
+        c.firstChild.style.height = "100%";
+      }
+      if (i < turns && (i + 1) % 5 === 0) { c.lastChild.textContent = String(i + 1); }
+    }
+    document.getElementById("turnsVal").textContent = String(turns);
+    document.getElementById("driftCarry").textContent = String(turns);
+    document.getElementById("driftKeep").textContent = String(s.fresh);
+    document.getElementById("driftRatio").textContent = s.staleRatio.toFixed(1) + "×";
+    document.getElementById("driftOut").textContent = s.fresh + " of " + turns + " turns still relevant";
+  }
+  turnsInput.addEventListener("input", renderDrift);
+  renderDrift();
+
+  /* ---------- 02 loop stepper ---------- */
+  var steps = [
+    {
+      name: "Measure", lane: "inner", status: "proven api", chip: "proven",
+      q: "How much of the window is actually used?",
+      what: "Read <code>getContextUsage()</code> against the reported window; keep raw tokens, window size and model identity.",
+      inv: "Unknown, null or stale usage produces <em>no</em> threshold decision at all.",
+      actor: "Extension",
+      fail: "Missing usage means silence — not an assumption that it is low."
+    },
+    {
+      name: "Gate", lane: "inner", status: "partial", chip: "partial",
+      q: "Is this a moment a cut could be legal?",
+      what: "Threshold reached, session idle, no pending messages, snapshot stable (session file, branch head, editor text). One candidate at a time.",
+      inv: "Active tool runs and queued work are never interrupted.",
+      actor: "Extension",
+      fail: "A changed snapshot invalidates any approval that referenced the old one."
+    },
+    {
+      name: "Propose", lane: "inner", status: "unproven", chip: "unproven",
+      q: "Is this a boundary — and is the next work new or ongoing?",
+      what: "The running model names a possible boundary and classifies the work. Bounded call, bounded latency, verified signaling mechanism.",
+      inv: "A proposal is never evidence. It is one input to a judge.",
+      actor: "Running model",
+      fail: "No proven signaling mechanism yet — this is part of Gate 0."
+    },
+    {
+      name: "Adjudicate", lane: "inner", status: "unproven", chip: "unproven",
+      q: "Does an independent judge agree, and with what work type?",
+      what: "decision-server through Jev returns <code>verified</code> / <code>not_boundary</code> / <code>uncertain</code>, a work type and a reason.",
+      inv: "An empty adapter result is a missing judgment, never a verified boundary.",
+      actor: "Decision server → Jev",
+      fail: "Malformed, missing and timed-out outcomes are all non-approvals."
+    },
+    {
+      name: "Offer", lane: "inner", status: "unproven mechanism", chip: "unproven",
+      q: "How does the human find out, and how do they decline?",
+      what: "At 50%: a quiet, verified opportunity with an on-demand review. At 60%: an active ask at the next verified boundary.",
+      inv: "Declining costs one keystroke, and is remembered.",
+      actor: "Extension → human",
+      fail: "Command-only switching means this step can ask but cannot act; J2 decides whether the ask is real."
+    },
+    {
+      name: "Generate", lane: "outer", status: "partial", chip: "partial",
+      q: "What exactly survives the cut?",
+      what: "A cheap, configured-once scribe model writes the handoff from the active branch projection, with bounded optional file reads.",
+      inv: "No mutating capability. Untrusted transcript stays separate from instructions. No invented test results.",
+      actor: "Handoff agent",
+      fail: "Provider unavailable means ask for configuration — never substitute one silently."
+    },
+    {
+      name: "Review", lane: "outer", status: "partial", chip: "partial",
+      q: "Is this handoff true enough to carry the work?",
+      what: "Reason, work type and editable handoff are presented. New work keeps trimmed relevance; ongoing work keeps working state.",
+      inv: "Editing is first-class; the approved text is exactly what is stored.",
+      actor: "Human",
+      fail: "Decline returns to the inner loop and requires a new boundary plus cooldown."
+    },
+    {
+      name: "Approve", lane: "outer", status: "partial", chip: "partial",
+      q: "Does the human's yes still apply to the world in front of it?",
+      what: "Approval binds exact handoff text, source session file, branch head and pending request. Revalidated immediately before the cut.",
+      inv: "Boundary confirmation is not switch approval; fallback compaction needs its own yes.",
+      actor: "Human",
+      fail: "Drift, veto or a missing source file stops the cut without deleting anything."
+    },
+    {
+      name: "Switch", lane: "outer", status: "unproven", chip: "unproven",
+      q: "Can the new session begin without doing anything on its own?",
+      what: "<code>newSession</code> with the parent session and fresh context; handoff persisted with no triggered turn; pending text staged separately in the editor.",
+      inv: "The old session stays resumable and linked, or no switch happens.",
+      actor: "Pi API, command-only",
+      fail: "J1: neither persistence-without-turn nor exact draft restoration is proven yet."
+    },
+    {
+      name: "Wait", lane: "outer", status: "unproven", chip: "unproven",
+      q: "Who moves next?",
+      what: "The new session sits at an empty prompt until the human acts. Branch-scoped state is re-anchored on resume; session-scoped work clears on shutdown.",
+      inv: "Nothing is auto-submitted. The pending request waits to be sent.",
+      actor: "Human",
+      fail: "If it cannot be proven that no turn runs, stop rather than post a message that executes."
+    }
+  ];
+
+  var active = 0;
+  var innerNodes = document.getElementById("innerNodes");
+  var outerNodes = document.getElementById("outerNodes");
+
+  steps.forEach(function (s, i) {
+    var b = document.createElement("button");
+    b.className = "node";
+    b.type = "button";
+    b.innerHTML = '<span class="idx">' + String(i + 1).padStart(2, "0") + "</span>" + s.name;
+    b.addEventListener("click", function () { setStep(i); });
+    (s.lane === "inner" ? innerNodes : outerNodes).appendChild(b);
+  });
+
+  function setStep(i) {
+    active = Math.max(0, Math.min(steps.length - 1, i));
+    var s = steps[active];
+    var all = document.querySelectorAll(".node");
+    all.forEach(function (n, idx) {
+      n.classList.toggle("active", idx === active);
+      n.classList.toggle("done", idx < active);
+    });
+    document.getElementById("stepName").textContent = s.name;
+    var chip = document.getElementById("stepChip");
+    chip.textContent = s.status;
+    chip.className = "chip " + s.chip;
+    document.getElementById("stepQ").textContent = s.q;
+    document.getElementById("stepWhat").innerHTML = s.what;
+    document.getElementById("stepInv").innerHTML = s.inv;
+    document.getElementById("stepActor").innerHTML = s.actor;
+    document.getElementById("stepFail").innerHTML = s.fail;
+    document.getElementById("loopCount").textContent = "step " + (active + 1) + " / " + steps.length;
+    document.getElementById("prevStep").disabled = active === 0;
+    document.getElementById("nextStep").disabled = active === steps.length - 1;
+  }
+  document.getElementById("prevStep").addEventListener("click", function () { setStep(active - 1); });
+  document.getElementById("nextStep").addEventListener("click", function () { setStep(active + 1); });
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /input|textarea|button/i.test(e.target.tagName)) return;
+    if (e.key === "ArrowRight") { setStep(active + 1); }
+    if (e.key === "ArrowLeft") { setStep(active - 1); }
+  });
+  setStep(0);
+
+  /* ---------- 04 verdict lab ---------- */
+  var verdicts = {
+    verified: {
+      does: "Advances to Offer: the boundary and work type are presented to the human.",
+      sees: "A quiet opportunity at 50%, or an active ask at 60%, with the reason and work type.",
+      sw: "Only after review and a separate approval — this verdict is a boundary, not a consent.",
+      trap: "The one verdict that moves the loop. It still cannot cut anything by itself.",
+      cls: "advance", label: "verified"
+    },
+    not_boundary: {
+      does: "Waits. Nothing is offered, nothing is logged as a missed opportunity.",
+      sees: "Nothing, unless they ask for session status.",
+      sw: "No. A confident negative is respected, not retried.",
+      trap: "A model that keeps insisting is not evidence; the judge's negative ends the round.",
+      cls: "stop", label: "not_boundary"
+    },
+    uncertain: {
+      does: "Escalates the boundary question to the human using the loop's own vocabulary.",
+      sees: "A boundary question — 'was that a milestone?' — with the reason the judge was unsure.",
+      sw: "Not from this answer. Confirming a boundary is explicitly not switch approval.",
+      trap: "This is the verdict most likely to be laundered into consent. Keep the two questions separate.",
+      cls: "escalate", label: "uncertain"
+    },
+    disagreement: {
+      does: "The decision server decides between its own judgment and the model's proposal.",
+      sees: "Whichever outcome the server lands on, plus the reason.",
+      sw: "Only if the server's answer is verified, and only after review and approval.",
+      trap: "Direction of disagreement matters: a model asking to stop does not get to overrule a judge saying continue.",
+      cls: "escalate", label: "model ≠ server"
+    },
+    empty: {
+      does: "Treats the response as a missing judgment: no offer, and no threshold decision recorded.",
+      sees: "A visible 'decision unavailable' state and the option to review anyway.",
+      sw: "No. And the plan forbids inferring verified from a generic result.",
+      trap: "This is the trap the whole third Gate 0 investigation exists to close.",
+      cls: "stop", label: "{} (empty)"
+    },
+    timeout: {
+      does: "Fails the judgment, offers ordinary Pi compaction as the alternative path.",
+      sees: "The failure, and a compaction offer that requires its own explicit approval.",
+      sw: "No — and compaction does not run on this offer either.",
+      trap: "Unavailable is not consent, and 'offer a fallback' is not 'perform the fallback'.",
+      cls: "stop", label: "unavailable / timeout"
+    }
+  };
+
+  var vb = document.getElementById("verdictBtns");
+  Object.keys(verdicts).forEach(function (key) {
+    var b = document.createElement("button");
+    b.className = "btn";
+    b.type = "button";
+    b.dataset.key = key;
+    b.textContent = verdicts[key].label;
+    b.addEventListener("click", function () { setVerdict(key); });
+    vb.appendChild(b);
+  });
+
+  function setVerdict(key) {
+    var v = verdicts[key];
+    Array.prototype.forEach.call(vb.children, function (b) {
+      b.classList.toggle("on", b.dataset.key === key);
+    });
+    document.getElementById("verdictOut").textContent = v.label;
+    document.getElementById("vDoes").textContent = v.does;
+    document.getElementById("vSees").textContent = v.sees;
+    var sw = document.getElementById("vSwitch");
+    sw.textContent = v.sw;
+    sw.className = "v " + v.cls;
+    document.getElementById("vTrap").textContent = v.trap;
+  }
+  setVerdict("verified");
+
+  /* ---------- 05 simulator ---------- */
+  // fixed boundary schedule (minutes), so the widget is deterministic
+  var BOUNDARIES = [9, 14, 21, 27, 33, 40, 47, 54, 61, 68, 74, 81, 88, 96, 104, 112, 120, 129, 138, 147, 155, 164, 172, 180];
+  var DURATION = 180;
+  var START = 22, RATE = 0.42;   // % per minute, illustrative shape only
+
+  function simulate(cooldown, ask60, declineFirst) {
+    var usage = START;
+    var t;
+    var asks = [], declines = 0, switchAt = null, peak = START;
+    var lastAskAt = -Infinity;
+    var lastBoundaryIdx = -1;
+    var series = [];
+    var threshold = ask60 ? 60 : 50;
+
+    for (t = 0; t <= DURATION; t++) {
+      if (t > 0) usage = Math.min(100, usage + RATE);
+      peak = Math.max(peak, usage);
+      series.push({ t: t, u: usage });
+
+      if (switchAt !== null) continue;
+
+      var bidx = BOUNDARIES.indexOf(t);
+      if (bidx === -1) continue;
+      if (usage < threshold) continue;
+      if (t - lastAskAt < cooldown) continue;
+      if (bidx === lastBoundaryIdx) continue;
+
+      lastAskAt = t;
+      lastBoundaryIdx = bidx;
+
+      if (declines === 0 && declineFirst) {
+        declines = 1;
+        asks.push({ t: t, declined: true });
+        continue;
+      }
+
+      asks.push({ t: t, declined: false });
+      switchAt = t;
+      usage = 18;                 // handoff + fresh-session baseline
+    }
+
+    return { asks: asks.length, declined: declines, switchAt: switchAt, peak: peak, marks: asks, series: series };
+  }
+
+  var simTrack = document.getElementById("simTrack");
+  var simArea = document.getElementById("simArea");
+  var cooldownInput = document.getElementById("cooldown");
+  var togAsk60 = document.getElementById("togAsk60");
+  var togDecline = document.getElementById("togDecline");
+
+  function renderSim() {
+    var cooldown = parseInt(cooldownInput.value, 10);
+    var res = simulate(cooldown, togAsk60.checked, togDecline.checked);
+
+    simArea.innerHTML = "";
+
+    // context curve, drawn in a 0-100 viewBox stretched to the track
+    var svgNS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("class", "sim-svg");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    // y-axis window keeps the curve off the flat bottom of the track
+    var Y_MIN = 15, Y_MAX = 80;
+    function yOf(u) { return 100 - ((Math.max(Y_MIN, Math.min(Y_MAX, u)) - Y_MIN) / (Y_MAX - Y_MIN)) * 100; }
+
+    var d = "";
+    res.series.forEach(function (p, i) {
+      var x = (p.t / DURATION) * 100;
+      var y = yOf(p.u);
+      d += (i === 0 ? "M" : "L") + x.toFixed(3) + " " + y.toFixed(3) + " ";
+    });
+    var area = document.createElementNS(svgNS, "path");
+    area.setAttribute("d", d + "L100 100 L0 100 Z");
+    area.setAttribute("fill", "rgba(163,59,38,0.07)");
+    svg.appendChild(area);
+    var line = document.createElementNS(svgNS, "path");
+    line.setAttribute("d", d);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", "#a33b26");
+    line.setAttribute("stroke-width", "1.5");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(line);
+    simArea.appendChild(svg);
+
+    [50, 60].forEach(function (pct) {
+      var l = document.createElement("div");
+      l.className = "threshold";
+      l.style.top = yOf(pct) + "%";
+      var lab = document.createElement("span");
+      lab.textContent = pct + "%";
+      l.appendChild(lab);
+      simArea.appendChild(l);
+    });
+
+    BOUNDARIES.forEach(function (m) {
+      var tick = document.createElement("div");
+      tick.className = "sim-boundary";
+      tick.style.left = ((m / DURATION) * 100) + "%";
+      simArea.appendChild(tick);
+    });
+
+    res.marks.forEach(function (m) {
+      var dot = document.createElement("div");
+      dot.className = "sim-ask" + (m.declined ? " declined" : "");
+      dot.style.left = ((m.t / DURATION) * 100) + "%";
+      dot.title = "ask at " + m.t + "m" + (m.declined ? " (declined)" : "");
+      simArea.appendChild(dot);
+    });
+
+    if (res.switchAt !== null) {
+      var sw = document.createElement("div");
+      sw.className = "sim-switch";
+      sw.style.left = ((res.switchAt / DURATION) * 100) + "%";
+      var lab = document.createElement("span");
+      lab.textContent = "cut " + res.switchAt + "m";
+      sw.appendChild(lab);
+      simArea.appendChild(sw);
+    }
+
+    document.getElementById("simAsks").textContent = String(res.asks);
+    document.getElementById("simDeclines").textContent = String(res.declined);
+    document.getElementById("simSwitch").textContent = res.switchAt === null ? "never" : res.switchAt + "m";
+    document.getElementById("simPeak").textContent = Math.round(res.peak) + "%";
+    document.getElementById("cooldownVal").textContent = cooldown + "m";
+    document.getElementById("simOut").textContent =
+      (togAsk60.checked ? "ask from 60%" : "ask from 50%") +
+      " · cooldown " + cooldown + "m" +
+      (togDecline.checked ? " · one decline" : "");
+  }
+
+  cooldownInput.addEventListener("input", renderSim);
+  togAsk60.addEventListener("change", renderSim);
+  togDecline.addEventListener("change", renderSim);
+  window.addEventListener("resize", renderSim);
+  renderSim();
+})();
+</script>
+</body>
+</html>

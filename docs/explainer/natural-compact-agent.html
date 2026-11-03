@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One agent, two continuations — natural compact</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f3f0;
+    --bg-2: #efeeea;
+    --panel: #ffffff;
+    --panel-2: #fbfaf8;
+    --panel-3: #f1efeb;
+    --ink: #14161a;
+    --ink-2: #43464c;
+    --muted: #7c8089;
+    --line: rgba(20, 22, 26, 0.11);
+    --line-2: rgba(20, 22, 26, 0.06);
+    --accent: #a4470f;
+    --accent-2: #c9741f;
+    --accent-soft: rgba(164, 71, 15, 0.09);
+    --ok: #1a7f47;
+    --warn: #a3341f;
+    --shadow-1: 0 1px 2px rgba(20, 22, 26, 0.05);
+    --shadow-2: 0 1px 2px rgba(20, 22, 26, 0.05), 0 12px 32px -12px rgba(20, 22, 26, 0.14);
+    --hi: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    --r: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0b0e;
+      --bg-2: #0e1014;
+      --panel: #14161b;
+      --panel-2: #181b21;
+      --panel-3: #1e2229;
+      --ink: #edeef2;
+      --ink-2: #b6bac3;
+      --muted: #868c96;
+      --line: rgba(255, 255, 255, 0.11);
+      --line-2: rgba(255, 255, 255, 0.06);
+      --accent: #f0a95f;
+      --accent-2: #ffcf94;
+      --accent-soft: rgba(240, 169, 95, 0.13);
+      --ok: #57c98a;
+      --warn: #e8796b;
+      --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 44px -18px rgba(0, 0, 0, 0.8);
+      --hi: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .glow {
+    position: fixed; inset: -20% -10% auto -10%; height: 620px; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(680px 300px at 18% 12%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+      radial-gradient(520px 260px at 82% 0%, color-mix(in srgb, var(--accent-2) 9%, transparent), transparent 72%);
+    opacity: .9;
+  }
+  .wrap { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: 0 24px 130px; }
+
+  a { color: var(--accent); text-decoration: none; }
+  code {
+    font-family: var(--mono); font-size: .85em; background: var(--panel-3);
+    padding: 1.5px 5px; border-radius: 5px; color: var(--ink);
+  }
+  .nowrap { white-space: nowrap; }
+
+  /* ---------- hero ---------- */
+  header { padding: 76px 0 4px; }
+  .hero { display: grid; grid-template-columns: 1.35fr .8fr; gap: clamp(24px, 5vw, 64px); align-items: end; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--muted); display: flex; align-items: center; gap: 10px; margin-bottom: 22px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: breathe 3s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity:.3; } 50% { opacity:1; } }
+  h1 {
+    font-size: clamp(34px, 5.6vw, 58px); line-height: 1.03; letter-spacing: -.035em;
+    font-weight: 680; margin: 0 0 20px; max-width: 15ch;
+  }
+  h1 .em {
+    background: linear-gradient(94deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { font-size: 18.5px; color: var(--ink-2); margin: 0; max-width: 54ch; }
+
+  .receipt {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+    box-shadow: var(--shadow-2), var(--hi); overflow: hidden;
+  }
+  .receipt-h {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 11px 15px; border-bottom: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+  }
+  .receipt-b { padding: 6px 15px 12px; }
+  .ra { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line-2); font-size: 12.5px; }
+  .ra:last-child { border-bottom: 0; }
+  .ra .rk { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--accent); min-width: 84px; padding-top: 2px; }
+  .ra .rv { color: var(--ink-2); }
+  .ra .rv b { color: var(--ink); font-weight: 600; }
+  .receipt-f {
+    padding: 9px 15px; border-top: 1px solid var(--line-2); background: var(--panel-2);
+    font-size: 11.5px; color: var(--muted); line-height: 1.5;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 84px; }
+  .sec { display: flex; align-items: baseline; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+  .sec .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); white-space: nowrap;
+  }
+  .sec h2 { font-size: clamp(21px, 2.6vw, 28px); line-height: 1.18; letter-spacing: -.024em; font-weight: 660; margin: 0; }
+  .sec .n { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .intro { font-size: 16.5px; color: var(--ink-2); max-width: 74ch; margin: 0 0 22px; }
+  .intro strong { color: var(--ink); font-weight: 600; }
+  p { color: var(--ink-2); margin: 0 0 14px; max-width: 74ch; }
+  p strong { color: var(--ink); font-weight: 600; }
+  h3 { font-size: 15px; font-weight: 650; letter-spacing: -.005em; margin: 0 0 6px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+    box-shadow: var(--shadow-2), var(--hi); overflow: hidden;
+  }
+  .card-pad { padding: 18px 20px; }
+  .card-pad p:last-child { margin-bottom: 0; }
+
+  /* motion */
+  .rev { opacity: 0; transform: translateY(12px); }
+  .rev.in { opacity: 1; transform: none; transition: opacity .65s cubic-bezier(.16,1,.3,1), transform .65s cubic-bezier(.16,1,.3,1); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .rev { opacity: 1; transform: none; }
+    html { scroll-behavior: auto; }
+  }
+
+  /* ---------- chat mock ---------- */
+  .chat { overflow: hidden; }
+  .chat-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line-2); background: var(--panel-2);
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  }
+  .chat-bar .dots { display: flex; gap: 5px; }
+  .chat-bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: block; }
+  .chat-bar .pct { margin-left: auto; color: var(--ink-2); }
+  .turn { display: grid; grid-template-columns: 58px 1fr; gap: 0 12px; padding: 10px 16px 10px 13px; position: relative; border-left: 3px solid transparent; }
+  .turn + .turn { border-top: 1px solid var(--line-2); }
+  .turn.keep { border-left-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .turn.drop { border-left-color: var(--line); }
+  .turn.pend { border-left-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+  .turn .who { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding-top: 3px; }
+  .turn.user .who { color: var(--accent); }
+  .turn .body { min-width: 0; font-size: 14px; color: var(--ink-2); padding-right: 68px; }
+  .turn .body .q { color: var(--ink); font-weight: 550; margin: 0; }
+  .turn .body p { margin: 0; max-width: none; }
+  .turn.tool .body { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .turn .tag {
+    position: absolute; right: 16px; top: 12px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: .06em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--panel);
+  }
+  .turn .tag.keep { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .turn .tag.pend { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .composer { border-top: 1px solid var(--line-2); background: var(--panel-2); padding: 13px 16px; display: flex; gap: 12px; align-items: flex-start; }
+  .composer .lbl { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); padding-top: 4px; white-space: nowrap; }
+  .draft {
+    flex: 1; font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+    box-shadow: var(--shadow-1);
+  }
+  .caret { display: inline-block; width: 1.5px; height: 14px; background: var(--accent); vertical-align: -2px; animation: caret 1.1s steps(2) infinite; }
+  @keyframes caret { 0%,49% { opacity:1 } 50%,100% { opacity:0 } }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-size: 12.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .legend i.k { background: color-mix(in srgb, var(--ok) 65%, transparent); }
+  .legend i.d { background: var(--line); }
+  .legend i.p { background: color-mix(in srgb, var(--warn) 70%, transparent); }
+
+  /* ---------- sequence ---------- */
+  .seq { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .seq-cell { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 13px 14px 15px; position: relative; box-shadow: var(--shadow-1), var(--hi); }
+  .seq-cell .n { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .seq-cell .t { font-size: 13.5px; font-weight: 620; margin: 5px 0 4px; letter-spacing: -.01em; }
+  .seq-cell .d { font-size: 12px; color: var(--muted); line-height: 1.48; }
+  .seq-cell.hot { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
+  .seq-cell.hot .t { color: var(--accent); }
+  .seq-cell::after { content: "›"; position: absolute; right: -9px; top: 46%; color: var(--muted); font-size: 15px; line-height: 1; }
+  .seq-cell:last-child::after { content: ""; }
+
+  /* ---------- tabs ---------- */
+  .tabs { display: flex; gap: 3px; padding: 5px; background: var(--panel-3); overflow-x: auto; }
+  .tabs button {
+    flex: 1; min-width: 116px; font: inherit; font-size: 12.5px; font-weight: 550; color: var(--ink-2);
+    background: transparent; border: 0; border-radius: 8px; padding: 8px 10px; cursor: pointer; white-space: nowrap;
+  }
+  .tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-1); }
+  .pane { display: none; padding: 20px; }
+  .pane.on { display: block; }
+
+  .prompt {
+    font-family: var(--mono); font-size: 12.4px; line-height: 1.72; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px;
+    padding: 15px 17px; white-space: pre-wrap; margin: 0;
+  }
+  .prompt .c { color: var(--muted); }
+  .prompt .k { color: var(--accent); font-weight: 600; }
+  .pane-note { font-size: 12px; color: var(--muted); margin: 12px 0 0; }
+
+  .blocks { display: grid; gap: 7px; }
+  .block { display: grid; grid-template-columns: 148px 1fr; gap: 12px; border: 1px solid var(--line-2); border-radius: 9px; padding: 10px 12px; background: var(--panel-2); font-size: 13px; }
+  .block .bk { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding-top: 2px; }
+  .block .bv { color: var(--ink-2); }
+  .block .bv b { color: var(--ink); font-weight: 600; }
+
+  .seg { display: inline-flex; background: var(--panel-3); border-radius: 9px; padding: 3px; margin-bottom: 15px; }
+  .seg button { font: inherit; font-size: 12px; font-weight: 550; color: var(--ink-2); background: transparent; border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  .seg button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-1); }
+
+  .out { border: 1px solid var(--line-2); border-radius: 11px; overflow: hidden; }
+  .out-h { display: flex; justify-content: space-between; gap: 10px; padding: 9px 13px; background: var(--panel-2); border-bottom: 1px solid var(--line-2); font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .out-b { padding: 14px 15px; font-size: 13.2px; }
+  .out-b h4 { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 13px 0 4px; font-weight: 600; }
+  .out-b h4:first-child { margin-top: 0; }
+  .out-b ul { margin: 0; padding-left: 17px; color: var(--ink-2); }
+  .out-b li { margin-bottom: 3px; }
+  .out-b p { margin: 0; }
+  .out-b .none { color: var(--muted); font-style: italic; }
+  .verbatim { font-family: var(--mono); font-size: 12px; background: var(--panel-3); padding: 8px 10px; border-radius: 7px; color: var(--ink); margin-top: 4px; }
+
+  /* ---------- receipts / code ---------- */
+  .receipts { display: grid; gap: 12px; margin-top: 20px; }
+  .rc { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-1), var(--hi); overflow: hidden; }
+  .rc-h { display: flex; align-items: baseline; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line-2); }
+  .rc-h .id { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+  .rc-h .nm { font-size: 13.5px; font-weight: 620; letter-spacing: -.01em; }
+  .rc-h .tag { margin-left: auto; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+  .rc-b { padding: 13px 14px; }
+  .rc-b pre {
+    margin: 0 0 8px; font-family: var(--mono); font-size: 12px; line-height: 1.65; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 11px 12px; overflow-x: auto;
+  }
+  .rc-b pre .cm { color: var(--muted); }
+  .rc-b pre .kw { color: var(--accent); }
+  .rc-b p { font-size: 13px; margin: 0; }
+
+  /* ---------- mode switch (destination) ---------- */
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 22px; }
+  .mode {
+    text-align: left; font: inherit; cursor: pointer; border-radius: 12px; padding: 14px 16px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink); box-shadow: var(--shadow-1), var(--hi);
+    transition: border-color .18s ease, background .18s ease, transform .18s ease;
+  }
+  .mode:hover { transform: translateY(-1px); }
+  .mode .mt { font-size: 14px; font-weight: 640; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+  .mode .md { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
+  .mode[aria-selected="true"] { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+  .mode[aria-selected="true"] .mt { color: var(--accent); }
+  .mode .dotm { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+  .mode[aria-selected="true"] .dotm { background: var(--accent); }
+
+  .timeline { position: relative; margin-top: 6px; }
+  .tl { display: grid; grid-template-columns: 30px 1fr; gap: 0 16px; position: relative; padding-bottom: 18px; }
+  .tl:last-child { padding-bottom: 0; }
+  .tl::before { content: ""; position: absolute; left: 14px; top: 30px; bottom: -2px; width: 1px; background: var(--line); }
+  .tl:last-child::before { display: none; }
+  .tl .dot { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+  .tl .st { font-size: 14.5px; font-weight: 620; margin-bottom: 3px; padding-top: 2px; }
+  .tl .sd { font-size: 13.5px; color: var(--ink-2); max-width: 68ch; }
+  .tl .sd code { font-size: 12.4px; }
+
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+  .ba-col { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-1), var(--hi); }
+  .ba-h { display: flex; justify-content: space-between; gap: 10px; padding: 9px 13px; border-bottom: 1px solid var(--line-2); background: var(--panel-2); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .ba-b { padding: 11px 12px; display: grid; gap: 6px; }
+  .msg { border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 10px; font-size: 12.2px; color: var(--ink-2); line-height: 1.5; }
+  .msg.user { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 24%, transparent); color: var(--ink); }
+  .msg.handoff { border-style: dashed; border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .msg .mh { display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .07em; text-transform: uppercase; color: var(--accent); margin-bottom: 3px; }
+  .msg.dim { opacity: .5; }
+  .msg.kept { border-left: 2px solid color-mix(in srgb, var(--ok) 50%, transparent); }
+  .editor { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; color: var(--ink); display: flex; gap: 4px; align-items: center; }
+  .editor .hint { margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .change { border-top: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent); padding-top: 8px; margin-top: 2px; }
+
+  /* ---------- table ---------- */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .tbl th { text-align: left; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; padding: 0 12px 9px; border-bottom: 1px solid var(--line); }
+  .tbl td { padding: 11px 12px; border-bottom: 1px solid var(--line-2); vertical-align: top; color: var(--ink-2); }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl td:first-child { color: var(--ink); font-weight: 550; width: 26%; }
+  .tbl .good { color: var(--ok); font-weight: 600; }
+  .tbl .bad { color: var(--warn); font-weight: 600; }
+  .tbl .neutral { color: var(--muted); }
+
+  .rules { display: grid; }
+  .rule { display: grid; grid-template-columns: 176px 1fr; gap: 16px; padding: 13px 18px; }
+  .rule + .rule { border-top: 1px solid var(--line-2); }
+  .rule .rk { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding-top: 3px; }
+  .rule .rv { font-size: 13.5px; color: var(--ink-2); }
+  .rule .rv b { color: var(--ink); font-weight: 600; }
+
+  .foot { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.9; }
+  .foot span { display: block; }
+  .foot b { color: var(--ink-2); font-weight: 500; }
+
+  @media (max-width: 920px) {
+    .hero { grid-template-columns: 1fr; align-items: start; }
+    .receipt { margin-top: 6px; }
+    .seq { grid-template-columns: 1fr 1fr; }
+    .seq-cell::after { display: none; }
+    .ba { grid-template-columns: 1fr; }
+    .tbl td:first-child { width: 34%; }
+  }
+  @media (max-width: 620px) {
+    .seq { grid-template-columns: 1fr; }
+    .modes { grid-template-columns: 1fr; }
+    .turn { grid-template-columns: 1fr; gap: 4px; }
+    .turn .body { padding-right: 0; }
+    .turn .tag { position: static; display: inline-block; margin-top: 6px; }
+    .block, .rule { grid-template-columns: 1fr; gap: 4px; }
+    .tbl td:first-child { width: auto; }
+    .tbl, .tbl thead, .tbl tbody, .tbl tr, .tbl td, .tbl th { display: block; }
+    .tbl thead { display: none; }
+    .tbl tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+    .tbl td { border: 0; padding: 3px 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+
+  <header>
+    <div class="hero">
+      <div>
+        <div class="eyebrow"><span class="dot"></span>natural compact · the handoff agent</div>
+        <h1>One agent. <span class="em">Two ways</span> to continue.</h1>
+        <p class="lede">The scribe model is the only model call in the whole feature. This is what wakes it, the exact prompts it gets, what it returns — and the answer to the question that decides the design: you can keep the same chat, and Pi gives you the hooks to do it.</p>
+      </div>
+      <div class="receipt">
+        <div class="receipt-h"><span>continuation, checked</span><span>pi api</span></div>
+        <div class="receipt-b">
+          <div class="ra"><span class="rk">same chat</span><span class="rv"><b>Doable.</b> <code>compact()</code> is on the base extension context, so the loop can invoke it — with approval, gated on idle.</span></div>
+          <div class="ra"><span class="rk">handoff → context</span><span class="rv">A <code>session_before_compact</code> hook can return its own <b>summary + firstKeptEntryId</b>.</span></div>
+          <div class="ra"><span class="rk">new chat</span><span class="rv"><code>newSession()</code> is command-only, and persisting without a turn is still unproven.</span></div>
+        </div>
+        <div class="receipt-f">Types and compaction docs in the installed Pi package — not a claim about behaviour under load.</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 01 -->
+  <section>
+    <div class="sec rev"><span class="k">01 · the material</span><h2>A real session, with the pending request still in the box</h2><span class="n">one digest</span></div>
+    <p class="intro rev">This is what the agent is asked to compress: a goal, a decision with its reason, a failure, and an unsent message. The tags are the only editorial judgement in the page — what carries, what doesn't.</p>
+
+    <div class="card chat rev">
+      <div class="chat-bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        pi · session 4f2a · branch main
+        <span class="pct">context 62%</span>
+      </div>
+      <div class="turn user keep">
+        <div class="who">you</div>
+        <div class="body"><p class="q">Add idempotency keys to <code>POST /checkout</code>. Retries from the mobile client are double-charging.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="turn assistant keep">
+        <div class="who">pi</div>
+        <div class="body"><p>Reading the route and the payments adapter before deciding where the key lives.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="turn tool drop">
+        <div class="who">tool</div>
+        <div class="body"><p>read src/checkout/route.ts · 214 lines</p></div>
+        <span class="tag">drop</span>
+      </div>
+      <div class="turn assistant keep">
+        <div class="who">pi</div>
+        <div class="body"><p><strong>Decision:</strong> keys go in a <code>checkout_keys</code> table keyed by <code>(merchant_id, idempotency_key)</code>, 24h TTL. Chosen over Redis because the migration flow already runs Postgres everywhere.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="turn tool drop">
+        <div class="who">tool</div>
+        <div class="body"><p>edit route.ts · edit 0031_checkout_keys.sql</p></div>
+        <span class="tag">drop</span>
+      </div>
+      <div class="turn assistant keep">
+        <div class="who">pi</div>
+        <div class="body"><p><strong>Blocker:</strong> the unique index name exceeds 63 characters and the migration fails on Postgres. Renaming it is unscheduled.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="turn tool drop">
+        <div class="who">tool</div>
+        <div class="body"><p>bash · pnpm test checkout → 1 failing</p></div>
+        <span class="tag">drop</span>
+      </div>
+      <div class="turn assistant keep">
+        <div class="who">pi</div>
+        <div class="body"><p><strong>Tests:</strong> the happy path passes locally; the failing case is the duplicate-key retry. Nothing has been run against staging.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="turn user keep">
+        <div class="who">you</div>
+        <div class="body"><p class="q">Also confirm the 24h window is long enough for the mobile retry queue.</p></div>
+        <span class="tag keep">keep</span>
+      </div>
+      <div class="composer">
+        <span class="lbl">editor</span>
+        <div class="draft">run the migration on staging and paste the plan output<span class="caret"></span></div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i class="k"></i>carried into the handoff</span>
+      <span><i class="p"></i>carried verbatim, outside the summary</span>
+      <span><i class="d"></i>dropped — tool noise, restated reads</span>
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section>
+    <div class="sec rev"><span class="k">02 · the trigger</span><h2>Nothing wakes the agent except a human opening the review</h2><span class="n">lazy by design</span></div>
+    <p class="intro rev">Thresholds and boundaries only produce an <em>offer</em>. The scribe is invoked at the moment the human asks to see the handoff, so a declined offer costs zero tokens and touches nothing.</p>
+
+    <div class="seq rev">
+      <div class="seq-cell"><div class="n">1</div><div class="t">Eligible</div><div class="d">62% of window, idle, no queued work, stable snapshot.</div></div>
+      <div class="seq-cell"><div class="n">2</div><div class="t">Boundary verified</div><div class="d">Model proposes; decision-server through Jev confirms and names the work type.</div></div>
+      <div class="seq-cell"><div class="n">3</div><div class="t">Offer accepted</div><div class="d">The human chooses to review. This is the only input that costs anything.</div></div>
+      <div class="seq-cell hot"><div class="n">4</div><div class="t">Agent invoked</div><div class="d">One read-only call, bounded in input size and latency.</div></div>
+      <div class="seq-cell"><div class="n">5</div><div class="t">Review</div><div class="d">Edit, approve, or decline. Decline returns to the loop untouched.</div></div>
+    </div>
+
+    <div class="card card-pad rev" style="margin-top:14px">
+      <p><strong>What the agent cannot do:</strong> start a turn, write a file, run a command, or decide whether to continue. Its output is text in a template, and both continuations treat that text as untrusted until a human approves it.</p>
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section>
+    <div class="sec rev"><span class="k">03 · the call</span><h2>System prompt, user prompt, output</h2><span class="n">one call</span></div>
+    <p class="intro rev">The material is split so the transcript can never impersonate an instruction. The system prompt carries policy; the user prompt carries data, labelled as data.</p>
+
+    <div class="card rev">
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-pane="sys">system</button>
+        <button role="tab" aria-selected="false" data-pane="usr">user</button>
+        <button role="tab" aria-selected="false" data-pane="out">output</button>
+        <button role="tab" aria-selected="false" data-pane="cap">capability</button>
+      </div>
+
+      <div class="pane on" id="p-sys">
+        <pre class="prompt"><span class="c">// system — proposed draft, shipped with the extension</span>
+You write the handoff note that lets work continue in a fresh context.
+
+<span class="k">Rules</span>
+- You are read-only. You cannot edit files, run commands, or start turns.
+- Use only the material below and files listed as readable.
+- Never claim a test ran, a build passed, or a decision was made unless
+  the transcript shows it. Quote what the transcript shows.
+- Preserve uncertainty and open questions. Do not resolve them.
+- Reproduce the pending request verbatim. Do not rewrite, summarize,
+  shorten, or re-quote it.
+- Refer to the previous session by the link you are given.
+- Output only the template for the requested mode. No preamble.
+
+<span class="k">Modes</span>
+- new:      decisions, constraints, project context, pending request, link
+- ongoing:  goal, decisions, constraints, files, changes, tests, blockers,
+            next steps, open questions, pending request, link
+
+<span class="k">Hard limit</span>
+- Stay within the character budget. Prefer dropping detail over dropping
+  a constraint, a blocker, or an unresolved question. Always keep the
+  file blocks Pi uses to track reads and edits.</pre>
+        <p class="pane-note">The read-only sentence is a capability, not a request: the call has no mutating tools available at all.</p>
+      </div>
+
+      <div class="pane" id="p-usr">
+        <div class="blocks">
+          <div class="block"><div class="bk">mode</div><div class="bv"><b>ongoing</b> — decided by the judge, not by this agent. It picks the template, not the input.</div></div>
+          <div class="block"><div class="bk">pending request</div><div class="bv"><b>verbatim</b>, fenced and labelled as data: “run the migration on staging and paste the plan output”.</div></div>
+          <div class="block"><div class="bk">branch projection</div><div class="bv">Active branch only, no abandoned branches. Oldest turns elided first; tool output truncated to head and tail; bounded to a configured cap.</div></div>
+          <div class="block"><div class="bk">compaction summary</div><div class="bv">If Pi already compacted, that summary is included <b>as prior context</b>, so the new note cannot contradict it.</div></div>
+          <div class="block"><div class="bk">referenced files</div><div class="bv">Optional and bounded: only files the transcript referenced, through a read-only interface, quoted and marked untrusted.</div></div>
+          <div class="block"><div class="bk">delimiters</div><div class="bv">Transcript and file text are wrapped as <b>data</b>. Instructions smuggled inside them are not instructions.</div></div>
+        </div>
+        <p class="pane-note">Assembled by the extension, not by a model: the same transcript yields the same prompt, so the call is reproducible and testable.</p>
+      </div>
+
+      <div class="pane" id="p-out">
+        <div class="seg" role="tablist">
+          <button role="tab" aria-selected="true" data-mode="ongoing">ongoing</button>
+          <button role="tab" aria-selected="false" data-mode="new">new work</button>
+        </div>
+
+        <div class="out">
+          <div class="out-h"><span>handoff · ongoing</span><span>bounded text, editable</span></div>
+          <div class="out-b" id="out-ongoing">
+            <h4>Goal</h4>
+            <p>Make checkout retries safe by adding idempotency keys to <code>POST /checkout</code>.</p>
+            <h4>Decisions</h4>
+            <ul>
+              <li>Keys in Postgres (<code>checkout_keys</code>), keyed by <code>(merchant_id, idempotency_key)</code>, 24h TTL.</li>
+              <li>Reason: the migration flow already provisions Postgres everywhere; Redis was rejected.</li>
+            </ul>
+            <h4>Constraints</h4>
+            <ul>
+              <li>The 24h window must cover the mobile retry queue — unconfirmed.</li>
+              <li>Postgres identifier limit of 63 characters.</li>
+            </ul>
+            <h4>Files &amp; changes</h4>
+            <ul>
+              <li><code>src/checkout/route.ts</code> — key extraction and replay response.</li>
+              <li><code>migrations/0031_checkout_keys.sql</code> — table plus unique index.</li>
+            </ul>
+            <h4>Tests</h4>
+            <ul>
+              <li>Ran locally: happy path passes; duplicate-key retry fails.</li>
+              <li class="none">Not run: nothing has been executed against staging.</li>
+            </ul>
+            <h4>Blockers</h4>
+            <ul><li>Index name over 63 characters, so the migration fails; renaming is unscheduled.</li></ul>
+            <h4>Next steps</h4>
+            <ul><li>Shorten the index name, re-run the checkout suite.</li><li>Confirm the retry-queue window before shipping.</li></ul>
+            <h4>Open questions</h4>
+            <ul><li>Is 24h long enough for the mobile queue?</li></ul>
+            <h4>Previous session</h4>
+            <p><span class="none">link to session 4f2a, branch main</span></p>
+            <h4>Pending request</h4>
+            <div class="verbatim">run the migration on staging and paste the plan output</div>
+            <h4>File tracking</h4>
+            <div class="verbatim">&lt;read-files&gt; src/checkout/route.ts &lt;/read-files&gt;
+&lt;modified-files&gt; src/checkout/route.ts, migrations/0031_checkout_keys.sql &lt;/modified-files&gt;</div>
+          </div>
+
+          <div class="out-b" id="out-new" hidden>
+            <h4>Context</h4>
+            <p>Pi session that added idempotency keys to <code>POST /checkout</code>; work is complete except a migration rename.</p>
+            <h4>Decisions that still bind</h4>
+            <ul><li>Postgres <code>checkout_keys</code> table, 24h TTL, chosen over Redis for deployment reasons.</li></ul>
+            <h4>Constraints</h4>
+            <ul><li>Postgres identifier limit of 63 characters.</li></ul>
+            <h4>Previous session</h4>
+            <p><span class="none">link to session 4f2a, branch main</span></p>
+            <h4>Pending request</h4>
+            <div class="verbatim">run the migration on staging and paste the plan output</div>
+          </div>
+          <div class="out-h" style="border-top:1px solid var(--line-2);border-bottom:0">
+            <span>new work: no blockers, no test log, no file inventory</span><span>shorter by design</span>
+          </div>
+        </div>
+        <p class="pane-note">Both templates carry the two things that must never be lost: the way back, and the pending request verbatim.</p>
+      </div>
+
+      <div class="pane" id="p-cap">
+        <div class="blocks">
+          <div class="block"><div class="bk">tools offered</div><div class="bv"><b>none</b> by default. File access, if enabled, is a read-only interface with a path allow-list and a byte cap — never a shell.</div></div>
+          <div class="block"><div class="bk">provider</div><div class="bv">Configured once and disclosed in review. Preferred default: an available OpenCode Go Flash model. If absent, the loop asks for configuration rather than substituting silently.</div></div>
+          <div class="block"><div class="bk">data leaving</div><div class="bv">Projection, referenced files, pending request — to the configured provider. Shown before the call, not after.</div></div>
+          <div class="block"><div class="bk">what is logged</div><div class="bv">Approved handoff text plus measurements, restricted local file, 30-day retention by default, opt-out available.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section>
+    <div class="sec rev"><span class="k">04 · the answer</span><h2>Yes — the same chat can continue</h2><span class="n">pi hooks</span></div>
+    <p class="intro rev">Pi's context is a projection over a session file, not the file itself. Compaction appends a summary entry and rebuilds the window from it, while the entries it skipped stay stored. So “continue this chat, with a handoff as its memory” is a supported operation — not a workaround.</p>
+
+    <div class="receipts">
+      <div class="rc rev">
+        <div class="rc-h"><span class="id">A</span><span class="nm">Custom compaction — the workhorse</span><span class="tag">base context</span></div>
+        <div class="rc-b">
+          <pre><span class="cm">// extension event, fired by /compact, threshold, or ctx.compact()</span>
+pi.on(<span class="kw">"session_before_compact"</span>, async (event) =&gt; ({
+  compaction: {
+    summary,                       <span class="cm">// ← the approved handoff</span>
+    firstKeptEntryId: event.preparation.firstKeptEntryId,
+    tokensBefore: event.preparation.tokensBefore,
+  },
+}));</pre>
+          <p>The handoff becomes the summary Pi rebuilds context from. Same session file, same chat, same early scrollback — the live window starts at the handoff plus whatever tail you chose to keep.</p>
+        </div>
+      </div>
+      <div class="rc rev">
+        <div class="rc-h"><span class="id">B</span><span class="nm">Tree navigation with a summary — the precise cut</span><span class="tag">command only</span></div>
+        <div class="rc-b">
+          <pre>ctx.<span class="kw">navigateTree</span>(entryId, {
+  summarize: <span class="kw">true</span>,
+  customInstructions: <span class="cm">/* the handoff */</span>,
+});</pre>
+          <p>Walk back to an earlier point in the same session tree and summarize the branch you left. Same file, same chat; useful when the boundary is “the point before this side quest”. Being command-only, it can never fire from an event handler.</p>
+        </div>
+      </div>
+      <div class="rc rev">
+        <div class="rc-h"><span class="id">C</span><span class="nm">New session — the true blank window</span><span class="tag">command only</span></div>
+        <div class="rc-b">
+          <pre>await ctx.<span class="kw">newSession</span>({
+  parentSession: current,
+  withSession: (c) =&gt; c.<span class="kw">sendMessage</span>(handoff, { triggerTurn: <span class="kw">false</span> }),
+});</pre>
+          <p>The cheapest possible first turn and a genuinely empty history — but persistence-without-a-turn and restoring the exact draft are the two joints still unproven in real Pi.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-pad rev" style="margin-top:14px">
+      <p><strong>The distinction that matters:</strong> continuous chat rewrites <em>what the model sees</em> inside the same conversation. A new session changes <em>which conversation exists</em>. Same agent output, different promise — and, it turns out, very different risk.</p>
+    </div>
+  </section>
+
+  <!-- 05 -->
+  <section>
+    <div class="sec rev"><span class="k">05 · the destination</span><h2>Where the output goes, in each mode</h2><span class="n">pick one</span></div>
+
+    <div class="modes rev">
+      <button class="mode" aria-selected="true" data-m="same">
+        <div class="mt"><span class="dotm"></span>Continue this chat</div>
+        <div class="md">Compaction in place. Same session file, same scrollback, draft never moves.</div>
+      </button>
+      <button class="mode" aria-selected="false" data-m="new">
+        <div class="mt"><span class="dotm"></span>Start a new session</div>
+        <div class="md">New window, linked to the parent. Handoff injected without a turn.</div>
+      </button>
+    </div>
+
+    <!-- SAME CHAT -->
+    <div id="steps-same">
+      <div class="timeline rev">
+        <div class="tl"><div class="dot">1</div><div><div class="st">Human edits, then approves</div><div class="sd">Approval binds the exact text, the session file, the branch head, and the draft as it stands. Any drift invalidates it — including a single keystroke in the composer.</div></div></div>
+        <div class="tl"><div class="dot">2</div><div><div class="st">The cut point is chosen and shown</div><div class="sd">Which tail survives — the last N turns, or nothing — becomes a visible choice in the review, not a hidden constant. Pi's <code>firstKeptEntryId</code> is the mechanism.</div></div></div>
+        <div class="tl"><div class="dot">3</div><div><div class="st">In-place rewrite</div><div class="sd"><code>compact()</code> fires <code>session_before_compact</code>, which returns the approved handoff as the summary. Pi appends one compaction entry and rebuilds the window from it.</div></div></div>
+        <div class="tl"><div class="dot">4</div><div><div class="st">The chat shows a seam, not a new chat</div><div class="sd">One “context compacted” marker in the transcript. Everything above it is still scrollable, still searchable, still there.</div></div></div>
+        <div class="tl"><div class="dot">5</div><div><div class="st">The draft never moved</div><div class="sd">It was in the editor the whole time. The hardest part of the new-session path — restoring it byte for byte — simply does not exist here.</div></div></div>
+        <div class="tl"><div class="dot">6</div><div><div class="st">Next turn</div><div class="sd">The model sees system prompt + handoff summary + the kept tail. Same file, same run history, smaller window.</div></div></div>
+      </div>
+
+      <div class="ba rev">
+        <div class="ba-col">
+          <div class="ba-h"><span>before · 9 turns</span><span>62%</span></div>
+          <div class="ba-b">
+            <div class="msg user">Add idempotency keys to POST /checkout…</div>
+            <div class="msg dim">Decision: Postgres table, 24h TTL…</div>
+            <div class="msg dim">read src/checkout/route.ts (214 lines)</div>
+            <div class="msg dim">Blocker: index name over 63 characters…</div>
+            <div class="msg dim">…4 more turns…</div>
+            <div class="msg dim">Also confirm the 24h window…</div>
+          </div>
+        </div>
+        <div class="ba-col">
+          <div class="ba-h"><span>after · same session 4f2a</span><span>small window</span></div>
+          <div class="ba-b">
+            <div class="msg handoff"><span class="mh">context compacted · handoff</span>Goal, decision, constraint, blocker, next step, file blocks.</div>
+            <div class="msg kept">Your last two turns, kept as the tail.</div>
+            <div class="editor">run the migration on staging and paste the plan output<span class="caret"></span><span class="hint">still here</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEW SESSION -->
+    <div id="steps-new" hidden>
+      <div class="timeline rev">
+        <div class="tl"><div class="dot">1</div><div><div class="st">Human edits, then approves</div><div class="sd">Same binding: exact text, source session file, branch head, and the pending request.</div></div></div>
+        <div class="tl"><div class="dot">2</div><div><div class="st">Snapshot revalidated, then the switch</div><div class="sd">Idle, no queued work, branch head unchanged, source file reachable. <code>newSession({ parentSession, withSession })</code> runs from the command.</div></div></div>
+        <div class="tl"><div class="dot">3</div><div><div class="st">Handoff persisted as context, no turn triggered</div><div class="sd">The joint the plan refuses to assume. Upstream stages one combined draft instead, so this needs a real-Pi test.</div></div></div>
+        <div class="tl"><div class="dot">4</div><div><div class="st">Draft restored to the new editor, verbatim</div><div class="sd">Byte for byte, caret at the end. If it cannot be restored, the loop refuses the switch rather than flattening the request.</div></div></div>
+        <div class="tl"><div class="dot">5</div><div><div class="st">The session waits</div><div class="sd">No automatic turn. The first turn happens when you press enter — from a small, current context.</div></div></div>
+      </div>
+
+      <div class="ba rev">
+        <div class="ba-col">
+          <div class="ba-h"><span>old session · kept, resumable</span><span>9 turns</span></div>
+          <div class="ba-b">
+            <div class="msg user">Add idempotency keys to POST /checkout…</div>
+            <div class="msg dim">Decision: Postgres table, 24h TTL…</div>
+            <div class="msg dim">Blocker: index name over 63 characters…</div>
+            <div class="msg dim">…6 more turns…</div>
+            <div class="editor">run the migration on staging…<span class="hint">unsent</span></div>
+          </div>
+        </div>
+        <div class="ba-col">
+          <div class="ba-h"><span>new session · starts here</span><span>0 turns</span></div>
+          <div class="ba-b">
+            <div class="msg handoff"><span class="mh">handoff · context, no turn</span>Goal, decision, constraint, blocker, next step, link back.</div>
+            <div class="msg">Waiting. No request running.</div>
+            <div class="editor">run the migration on staging and paste the plan output<span class="caret"></span><span class="hint">restored</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 -->
+  <section>
+    <div class="sec rev"><span class="k">06 · the consequence</span><h2>Continuous mode removes the hardest joints</h2><span class="n">gate 0</span></div>
+    <p class="intro rev">The plan's four Gate 0 items were sized for the new-session path. Two of them stop existing when the loop stays in the same chat, one becomes a no-op, and only the judgement contract still has to be proven.</p>
+
+    <div class="card rev">
+      <table class="tbl">
+        <thead><tr><th>joint</th><th>new session</th><th>continue this chat</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Persist a handoff without triggering a turn</td>
+            <td><span class="bad">unproven</span> — needs a spike</td>
+            <td><span class="good">moot</span> — compaction is Pi's own write path</td>
+          </tr>
+          <tr>
+            <td>Restore the exact pending draft</td>
+            <td><span class="bad">unproven</span> — the draft has to move</td>
+            <td><span class="good">moot</span> — the draft never leaves the editor</td>
+          </tr>
+          <tr>
+            <td>Active 60% ask with a command-only switch</td>
+            <td><span class="bad">unproven</span> — command-only replacement</td>
+            <td><span class="good">reachable</span> — <code>compact()</code> is base-context, approval is still required</td>
+          </tr>
+          <tr>
+            <td>Resumability and a link back</td>
+            <td><span class="bad">needs proof</span> — path existence isn't resumability</td>
+            <td><span class="good">inherent</span> — omitted entries stay stored</td>
+          </tr>
+          <tr>
+            <td>A typed boundary + work-type verdict</td>
+            <td><span class="bad">unproven</span></td>
+            <td><span class="bad">unproven</span> — unchanged, and still load-bearing</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="ba" style="margin-top:14px">
+      <div class="ba-col rev">
+        <div class="ba-h"><span>continuous chat buys</span><span>+/−</span></div>
+        <div class="ba-b">
+          <div class="msg">No new-session plumbing, no draft restoration, no link to maintain.</div>
+          <div class="msg">The 60% ask becomes implementable without a command.</div>
+          <div class="msg">History stays one file, one id, one search surface.</div>
+        </div>
+      </div>
+      <div class="ba-col rev">
+        <div class="ba-h"><span>continuous chat costs</span><span>+/−</span></div>
+        <div class="ba-b">
+          <div class="msg">It is a projection rewrite inside the live conversation — a seam the human will see, in a chat they were reading.</div>
+          <div class="msg">A hand-written summary must keep Pi's file-tracking blocks, or read/edit state quietly drifts.</div>
+          <div class="msg">The system prompt and prior tool state are not re-primed the way a fresh session re-primes them.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-pad rev" style="margin-top:14px">
+      <p><strong>My recommendation:</strong> ship continuous chat as the default destination and keep new session as the deliberate option for “this task is over, start another”. It satisfies the original requirement — a smaller, current context with continuity — while deleting the two joints most likely to fail, and it keeps the one promise a new session cannot make: the chat you were in is still the chat you are in.</p>
+    </div>
+  </section>
+
+  <!-- 07 -->
+  <section>
+    <div class="sec rev"><span class="k">07 · the rules</span><h2>What holds in both modes</h2><span class="n">non-negotiable</span></div>
+
+    <div class="card rules rev">
+      <div class="rule"><div class="rk">approval</div><div class="rv"><b>Neither mode runs without it.</b> Compaction is capability, not consent — a boundary confirmation is still not a yes.</div></div>
+      <div class="rule"><div class="rk">provider missing</div><div class="rv"><b>Ask for configuration.</b> Never substitute a different provider or model silently.</div></div>
+      <div class="rule"><div class="rk">agent unavailable</div><div class="rv"><b>Do not continue.</b> Offer Pi's ordinary compaction as a separate choice, with its own approval.</div></div>
+      <div class="rule"><div class="rk">transcript too large</div><div class="rv"><b>Elide, never truncate mid-thought.</b> Drop oldest turns first and say what was elided in the review.</div></div>
+      <div class="rule"><div class="rk">unrunnable input</div><div class="rv"><b>Refuse, don't flatten.</b> Attachments and structured input that cannot be preserved stop the transition.</div></div>
+      <div class="rule"><div class="rk">log write fails</div><div class="rv"><b>Visible error, decision required.</b> Block by default, with an explicit “continue without the audit record” path.</div></div>
+      <div class="rule"><div class="rk">nothing approved</div><div class="rv"><b>Nothing happens.</b> The session, its branch and the draft are exactly where they were.</div></div>
+    </div>
+
+    <div class="card card-pad rev" style="margin-top:14px">
+      <p><strong>Still unproven, in both modes:</strong> the boundary verdict. Today's decision-server documentation covers tool events, and the plan requires a typed natural-boundary decision where an empty result can never be read as verified. Until that exists, the loop has a gate that only looks like a gate.</p>
+    </div>
+
+    <div class="foot">
+      <span><b>grounding</b> · taskNotes/natural-compact (taskFindings, requirements, specs 01–03) · pi docs/compaction.md · extension types</span>
+      <span><b>api</b> · <code>compact()</code> on ExtensionContext · <code>session_before_compact</code> → CompactionResult · <code>navigateTree()</code> / <code>newSession()</code> on ExtensionCommandContext</span>
+      <span><b>note</b> · prompts and handoff text are illustrative drafts; no measurements are claimed. The companion page, natural-compact-loop.html, dissects the loop around this call.</span>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* tabs (section 03) */
+  var tabs = document.querySelectorAll('.tabs [data-pane]');
+  Array.prototype.forEach.call(tabs, function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(tabs, function (b) { b.setAttribute('aria-selected', String(b === btn)); });
+      document.querySelectorAll('.pane').forEach(function (p) { p.classList.remove('on'); });
+      var pane = document.getElementById('p-' + btn.dataset.pane);
+      if (pane) pane.classList.add('on');
+    });
+  });
+
+  /* output mode (ongoing / new) */
+  var modeBtns = document.querySelectorAll('.seg [data-mode]');
+  var outOngoing = document.getElementById('out-ongoing');
+  var outNew = document.getElementById('out-new');
+  Array.prototype.forEach.call(modeBtns, function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(modeBtns, function (b) { b.setAttribute('aria-selected', String(b === btn)); });
+      var isNew = btn.dataset.mode === 'new';
+      outOngoing.hidden = isNew;
+      outNew.hidden = !isNew;
+    });
+  });
+
+  /* destination mode switch (section 05) */
+  var modes = document.querySelectorAll('.mode[data-m]');
+  var same = document.getElementById('steps-same');
+  var fresh = document.getElementById('steps-new');
+  Array.prototype.forEach.call(modes, function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(modes, function (b) { b.setAttribute('aria-selected', String(b === btn)); });
+      var isNew = btn.dataset.m === 'new';
+      same.hidden = isNew;
+      fresh.hidden = !isNew;
+    });
+  });
+
+  /* reveal on scroll, with a safety net */
+  var revs = Array.prototype.slice.call(document.querySelectorAll('.rev'));
+  function showAll() { revs.forEach(function (el) { el.classList.add('in'); }); }
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e, i) {
+        if (!e.isIntersecting) return;
+        e.target.style.transitionDelay = Math.min(i * 40, 160) + 'ms';
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      });
+    }, { rootMargin: '0px 0px -6% 0px', threshold: 0.05 });
+    revs.forEach(function (el) { io.observe(el); });
+    setTimeout(showAll, 1600);
+  } else {
+    showAll();
+  }
+})();
+</script>
+</body>
+</html>

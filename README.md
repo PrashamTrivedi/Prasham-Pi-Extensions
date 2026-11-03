@@ -42,20 +42,22 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | Extension | What it does | Controls |
 | --- | --- | --- |
 | **Fabric** | Recursive agent teams, worktree isolation, live agent rows, comparisons, and per-agent transcripts | `/agents`, four agent tools |
+| **BTW** | A main-chat-only side chat that answers from the current transcript and can stage a summary in the editor | `/btw`, `/btw send`, `PI_BTW_MODEL` |
 | **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
 | **Workbench** | Pet indicator, two-line footer, and a cockpit docked above the editor with context, provider usage, and recent decisions | `/cockpit`, `workbench.config.json` |
 | **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
-| **Project context** | Adds the working directory and a bounded directory tree to the system prompt | `PI_TREE_DEPTH`, `PI_TREE_MAX` |
+| **Project context** | Adds the working directory, a bounded directory tree, and Git state (branch, remote, uncommitted files) to the system prompt | `PI_TREE_DEPTH`, `PI_TREE_MAX`, `PI_GIT_STATUS_MAX` |
 | **Recursive context** | Loads nested `AGENTS.md` / `CLAUDE.md` in trusted projects | `PI_RECURSIVE_CONTEXT_MAX`, `PI_RECURSIVE_CONTEXT_NAMES` |
+| **Memory** | Gives each project a local Markdown memory (`next_`, `project_`, `feedback_`, `reference_` notes plus an index) and injects the location and protocol so the model reads and writes it with normal file tools | `PI_MEMORY_ROOT` |
 | **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data; renders only while a Workers AI model is active | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
-| **sandbox-dev** | Native plan → approve → implement → verify loop: minimal tool-permission floor, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools |
+| **sandbox-dev** | Native plan → approve → implement → verify loop: every tool call judged by the decision server with one prompt on any non-approval, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools |
 
 The herdr-generated integration is intentionally not redistributed. Install herdr's own integration separately.
 
 ## Documentation
 
-One guide per extension: [fabric](docs/fabric.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md).
+One guide per extension: [fabric](docs/fabric.md) · [btw](docs/btw.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
 
 ## Fabric: delegate without losing the thread
 
@@ -151,6 +153,14 @@ Results, patches, activity snapshots, and worktrees live under the system tempor
 
 ## Other extension configuration
 
+### BTW
+
+`/btw` opens a main-chat-only side chat. It prefers a free model; set
+`PI_BTW_MODEL` to `provider/model` (or a bare model id) to choose another. The
+side chat reads only the current transcript, writes nothing to disk or the
+session, and stages a summary in the editor with `Alt+S` or `/btw send`. It is
+unavailable inside a Fabric worker. See [docs/btw.md](docs/btw.md).
+
 ### Project context
 
 | Variable | Default | Meaning |
@@ -197,13 +207,13 @@ bun run extensions/sanitize-skill-names.ts --apply
 
 A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
 
-- **Permission floor.** A short allow/confirm/deny policy over `tool_call` and `user_bash`, fail-closed when there is no UI. Patterns are case-insensitive substrings, or `/regex/` when slash-delimited. This is pass 1 only; the shell-safety pass 2 belongs to `extensions/jev` (Phase 5) and may only escalate these verdicts. There is no config file — a project-local file that could zero the `deny` lists would make the floor unenforceable.
+- **Decision-server gate.** Every `tool_call` is mapped to the neutral jev-harness shape and sent to the decision server; an approval runs it, and a reject, an "ask", or an unreachable server becomes exactly one plain yes/no prompt for the human (fail closed with no UI). This package holds no dangerous-command list and no protected-path list, keeps no approval memory, and blocks nothing on its own — the decision server owns every judgement. `jev-gate` therefore keeps only its result and stop hooks: one gate, one owner, one server call per tool call.
 - **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md` from disk and appends the gate to the chat. It records nothing and classifies nothing; the human's reply in the transcript is the record, and the agent reads it. `r` only shows the plan; `/dev-approve` is an explicit human-only approval. The plan review alongside the digest is an ordinary model task, not a Jev judgment.
 - **Single-outcome anchoring.** The plan's `Original Ask` becomes the anchored outcome; the supervisor restates it each turn, enforces a turn budget, and stops when `dev_outcome_met` records raw evidence. Budget exhaustion is tracked separately and is not a satisfied outcome.
 
 ```text
 /dev-approve <task>   # approve a plan and start the implementation
-/dev-status           # show the anchored outcome and turn budget
+/dev-status           # show the anchored outcome, turn budget, and judged/server-approved/prompted counters
 /dev-reset            # clear the in-session gate and anchor
 ```
 
