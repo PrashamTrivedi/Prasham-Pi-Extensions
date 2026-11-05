@@ -22,6 +22,8 @@ export interface JevToolCall {
   mcpTool?: string;
   mcpArgs?: Record<string, unknown>;
   output?: string;
+  /** Failure text: jev-harness's `tool_failure` decisions apply on this. */
+  error?: string;
   subagentPrompt?: string;
   subagentModel?: string;
 }
