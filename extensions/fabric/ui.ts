@@ -47,6 +47,10 @@ export interface FabricAgentView {
   tools?: string;
   resultPath?: string;
   patchPath?: string;
+  /** Folded session usage; the cards show cost, tokens and the last tool. */
+  cost?: number;
+  tokens?: number;
+  lastTool?: string;
   /** Saved Pi session file for this run; the full transcript is replayed from it. */
   sessionPath?: string;
 }
@@ -85,7 +89,8 @@ export interface ComparisonResult {
 export interface ComparisonCardData {
   title?: string;
   left: ComparisonResult;
-  right: ComparisonResult;
+  /** Omit to render one full-width card instead of a pair with a placeholder. */
+  right?: ComparisonResult;
   /** Switch to stacked cards below this many columns. Default: 76. */
   sideBySideAt?: number;
   /** Total body lines per card (not counting title/border). Default: 7. */
@@ -114,6 +119,8 @@ export function renderComparisonResultCard(data: ComparisonCardData, theme: Fabr
   if (width < 1) return [];
   const title = data.title ? [truncateToWidth(theme.fg("accent", theme.bold(data.title)), width)] : [];
   const maxBody = Math.max(1, data.maxBodyLines ?? 7);
+  // A single result is one card at full width: never a placeholder card beside it.
+  if (!data.right) return [...title, ...renderResultCard(data.left, theme, width, maxBody)].map(line => truncateToWidth(line, width));
   const sideBySide = width >= (data.sideBySideAt ?? 76);
   if (!sideBySide) return [...title, ...renderResultCard(data.left, theme, width, maxBody), ...renderResultCard(data.right, theme, width, maxBody)].map(line => truncateToWidth(line, width));
   const gap = 2;
@@ -141,6 +148,13 @@ export type TranscriptEntry =
 export interface TranscriptSource {
   text: string;
   notice?: string;
+  /**
+   * Byte offset in the file where `text` ends. Live tailing resumes from here,
+   * so a head-trimmed transcript keeps following instead of re-reading the file.
+   */
+  offset?: number;
+  /** False when the file could not be read, so live tailing should not start. */
+  live?: boolean;
 }
 
 /** Per-block caps keep one huge tool result from crowding out the run. */
@@ -227,6 +241,25 @@ export function parseSessionText(text: string): TranscriptEntry[] {
   return text.split("\n").flatMap(parseSessionLine);
 }
 
+/**
+ * A replayable transcript as Markdown, for handing the run to an editor. Tool
+ * arguments go in an indented block so a fence inside them cannot break the file.
+ */
+export function transcriptMarkdown(label: string, meta: string, entries: readonly TranscriptEntry[]): string {
+  const lines: string[] = [`# ${label}`, meta ? `_${meta}_` : "", ""];
+  for (const entry of entries) {
+    switch (entry.kind) {
+      case "user": lines.push("## You", "", entry.text, ""); break;
+      case "assistant": lines.push("## Assistant", "", entry.text, ""); break;
+      case "thinking": lines.push("### Thinking", "", entry.text, ""); break;
+      case "toolCall": lines.push(`### \u2699 ${entry.name}`, "", ...entry.args.split("\n").map((line) => `    ${line}`), ""); break;
+      case "toolResult": lines.push(`### ${entry.isError ? "\u2717" : "\u2713"} ${entry.name}`, "", entry.text, ""); break;
+      case "note": lines.push(`> ${entry.text}`, ""); break;
+    }
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
 /** Message header labels; `band` paints them in the owning agent's hue. */
 function describeEntry(entry: TranscriptEntry, theme: FabricTheme, band?: (text: string) => string): { label: string; body: string } {
   const paint = band ?? ((text: string) => text);
@@ -253,6 +286,8 @@ export interface TranscriptPaneSpec {
   main?: boolean;
   /** Saved session file this pane replays. */
   path?: string;
+  /** Folded usage (`$0.04 · 128k · read`) shown in the header. */
+  usage?: string;
   /** Initial load; live updates arrive through the overlay's `appendText`. */
   read?: () => TranscriptSource;
 }
@@ -269,6 +304,34 @@ export interface TranscriptPaneOptions {
  * replayed session body. Parsing, incremental append, scrolling and width safety
  * live here; the overlay arranges one or two of these side by side.
  */
+/** Rendered lines per transcript block, wrapped for one width and appended incrementally. */
+/** Which blocks a reader wants to see; toggling either one re-wraps the body. */
+export interface TranscriptFilters {
+  showThinking: boolean;
+  collapseResults: boolean;
+}
+
+export const DEFAULT_TRANSCRIPT_FILTERS: TranscriptFilters = { showThinking: true, collapseResults: false };
+
+interface WrapBlock {
+  lines: string[];
+  /** A failed tool result: `e` jumps between these. */
+  error: boolean;
+}
+
+interface WrapCache {
+  width: number;
+  showThinking: boolean;
+  collapseResults: boolean;
+  /** Source entries already wrapped (thinking may be skipped, so this is not `blocks.length`). */
+  entries: number;
+  blocks: WrapBlock[];
+  /** `blocks` joined with a blank line between them. */
+  flat: string[];
+  /** Flat line index where each failed block starts. */
+  errors: number[];
+}
+
 export class TranscriptPane {
   private readonly theme: FabricTheme;
   private readonly spec: TranscriptPaneSpec;
@@ -276,10 +339,19 @@ export class TranscriptPane {
   private entries: TranscriptEntry[] = [];
   /** Index in `source.text` after the last parsed complete line. */
   private parsedChars = 0;
-  private cache?: { width: number; text: string; lines: string[] };
+  private wrap?: WrapCache;
   private offset = 0;
   private maxOffset = 0;
   private maxRows: number;
+  /** Following pins the view to the newest lines; scrolling up turns it off. */
+  private following = true;
+  /** Entries that arrived while paused, counted for the header tag. */
+  private pending = 0;
+  /** Full re-wraps (width or filters changed); appends reuse the cache, so this stays low. */
+  private rebuilds = 0;
+  private filters: TranscriptFilters = { ...DEFAULT_TRANSCRIPT_FILTERS };
+  /** Width of the last render, so search can lay the body out before painting it. */
+  private lastWidth = 80;
 
   constructor(options: TranscriptPaneOptions) {
     this.theme = options.theme;
@@ -287,10 +359,53 @@ export class TranscriptPane {
     this.maxRows = Math.max(3, options.maxRows ?? 20);
     if (this.spec.read) this.setSource(this.spec.read());
   }
+  private band(): ((text: string) => string) | undefined {
+    const band = this.theme.style ? agentBand(this.theme, this.spec.hue) : undefined;
+    return band && this.theme.style
+      ? (text: string) => this.theme.style!(text, { fg: band.fg, bg: band.bg })
+      : undefined;
+  }
   get id(): string { return this.spec.id; }
   get label(): string { return this.spec.label; }
   get hue(): number { return this.spec.hue; }
-  invalidate(): void { this.cache = undefined; }
+  /** Saved session file this pane replays, if any. */
+  get path(): string | undefined { return this.spec.path; }
+  get filterState(): TranscriptFilters { return { ...this.filters }; }
+  /** `t`: hide or show thinking blocks. Returns the new state. */
+  toggleThinking(): boolean {
+    this.filters = { ...this.filters, showThinking: !this.filters.showThinking };
+    this.wrap = undefined;
+    return this.filters.showThinking;
+  }
+  /** `r`: collapse each tool result to one line. Returns the new state. */
+  toggleResults(): boolean {
+    this.filters = { ...this.filters, collapseResults: !this.filters.collapseResults };
+    this.wrap = undefined;
+    return this.filters.collapseResults;
+  }
+  /** Flat body line indices whose text contains `query`, case-insensitively. */
+  findMatches(query: string): number[] {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    return this.bodyLines(this.lastWidth)
+      .map((line, index) => (line.toLowerCase().includes(needle) ? index : -1))
+      .filter((index) => index >= 0);
+  }
+  /** Flat body line indices of failed tool results, for `e`. */
+  errorLines(): number[] {
+    this.bodyLines(this.lastWidth);
+    return [...(this.wrap?.errors ?? [])];
+  }
+  /** Moves the view to a flat body line and pauses following. */
+  jumpToLine(line: number): void {
+    this.following = false;
+    this.offset = Math.max(0, line);
+  }
+  /** The whole run as Markdown, independent of the current scroll position or width. */
+  markdown(): string {
+    return transcriptMarkdown(this.spec.label, [this.spec.model, this.spec.status].filter(Boolean).join(" \u00b7 "), this.entries);
+  }
+  invalidate(): void { this.wrap = undefined; }
   /** Sizes the body so header + rule + body fills `height` lines exactly. */
   setHeight(height: number): void { this.maxRows = Math.max(3, Math.floor(height) - 2); }
   setSource(source: TranscriptSource): void {
@@ -299,8 +414,12 @@ export class TranscriptPane {
     const lastNewline = source.text.lastIndexOf("\n");
     this.parsedChars = lastNewline + 1;
     this.entries = parseSessionText(source.text.slice(0, this.parsedChars));
-    this.cache = undefined;
+    this.wrap = undefined;
     this.maxOffset = 0;
+    // A transcript opens at the end: the newest lines are what the human came for.
+    this.following = true;
+    this.pending = 0;
+    this.offset = Number.MAX_SAFE_INTEGER;
   }
   /** Parses only newly written lines, so following a live run does not re-read the file. */
   appendText(chunk: string): boolean {
@@ -312,68 +431,130 @@ export class TranscriptPane {
     this.parsedChars = end + 1;
     if (!fresh.length) return false;
     this.entries = [...this.entries, ...fresh];
-    this.cache = undefined;
+    if (!this.following) this.pending += fresh.length;
     return true;
   }
   /** Handles the scroll keys; returns true when the view moved. */
   scroll(input: string): boolean {
     const page = Math.max(1, this.maxRows - 2);
-    const before = this.offset;
-    if (matchesKey(input, Key.pageDown) || input === " " || input === "j") this.offset += page;
-    else if (matchesKey(input, Key.pageUp) || input === "k") this.offset -= page;
-    else if (matchesKey(input, Key.down)) this.offset += 1;
-    else if (matchesKey(input, Key.up)) this.offset -= 1;
-    else if (matchesKey(input, Key.home) || input === "g") this.offset = 0;
-    // "End" is resolved against the next layout, so it lands at the real end even
-    // when the content or the width changed since the last render.
-    else if (matchesKey(input, Key.end) || input === "G") { this.offset = Number.MAX_SAFE_INTEGER; return true; }
+    const before = this.resolvedOffset();
+    // `f` and End resume following; the sentinel is resolved by the next render.
+    if (matchesKey(input, Key.end) || input === "G" || input === "f") {
+      const wasFollowing = this.following;
+      this.following = true;
+      this.pending = 0;
+      this.offset = Number.MAX_SAFE_INTEGER;
+      return !wasFollowing || before !== this.maxOffset;
+    }
+    if (matchesKey(input, Key.home) || input === "g") {
+      this.following = false;
+      this.offset = 0;
+      return before !== 0;
+    }
+    // While following, the view is pinned to the end; scrolling starts from there.
+    if (this.following) this.offset = this.maxOffset;
+    let next = this.offset;
+    if (matchesKey(input, Key.pageDown) || input === " " || input === "j") next += page;
+    else if (matchesKey(input, Key.pageUp) || input === "k") next -= page;
+    else if (matchesKey(input, Key.down)) next += 1;
+    else if (matchesKey(input, Key.up)) next -= 1;
     else return false;
-    this.offset = Math.min(Math.max(0, this.offset), this.maxOffset);
-    return this.offset !== before;
+    next = Math.min(Math.max(0, next), this.maxOffset);
+    // Scrolling back down to the bottom resumes following, so nothing is missed.
+    this.following = next >= this.maxOffset;
+    if (this.following) this.pending = 0;
+    this.offset = next;
+    return before !== this.resolvedOffset();
   }
-  getState(): { offset: number; maxOffset: number; entries: number; rows: number } {
-    // The "jump to end" sentinel is resolved by the next render; report it already resolved.
-    const offset = this.offset === Number.MAX_SAFE_INTEGER ? this.maxOffset : this.offset;
-    return { offset, maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows };
+  /** The sentinel and the follow pin both resolve to the current end. */
+  private resolvedOffset(): number {
+    return this.following || this.offset === Number.MAX_SAFE_INTEGER ? this.maxOffset : this.offset;
+  }
+  getState(): { offset: number; maxOffset: number; entries: number; rows: number; following: boolean; pending: number; rebuilds: number } {
+    return { offset: this.resolvedOffset(), maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows, following: this.following, pending: this.pending, rebuilds: this.rebuilds };
+  }
+  /** The visible body rows only, for a host that draws its own frame (the peek panel). */
+  visibleRows(width: number, rows: number): string[] {
+    const body = this.bodyLines(width);
+    this.lastWidth = Math.max(1, width);
+    const max = Math.max(0, body.length - Math.max(1, rows));
+    this.maxOffset = max;
+    this.offset = this.following ? max : Math.min(Math.max(0, this.offset), max);
+    const start = this.resolvedOffset();
+    return body.slice(start, start + Math.max(1, rows));
   }
   /** Header, rule and body, padded to exactly `height` lines. */
   render(width: number, height: number, focused = false): string[] {
     if (width < 1) return [];
     const rows = Math.max(1, height - 2);
     const body = this.bodyLines(width);
+    this.lastWidth = width;
     const max = Math.max(0, body.length - rows);
     this.maxOffset = max;
-    this.offset = Math.min(Math.max(0, this.offset), max);
+    this.offset = this.following ? max : Math.min(Math.max(0, this.offset), max);
     const name = this.spec.main ? this.theme.fg("accent", this.theme.bold(this.spec.label)) : paintAgent(this.theme, this.spec.hue, this.spec.label);
-    const meta = [this.spec.model, this.spec.status].filter(Boolean).join(" · ");
+    const meta = [this.spec.model, this.spec.status, this.spec.usage].filter(Boolean).join(" · ");
+    // A read error or head trim is explained on the header; otherwise a paused
+    // view counts what arrived while the human was reading.
+    const tag = this.source.notice
+      ? this.theme.fg("dim", `· ${this.source.notice}`)
+      : this.following ? undefined
+      : this.pending > 0 ? this.theme.fg("warning", `+${this.pending} new`) : this.theme.fg("warning", "paused");
     const cursor = focused ? this.theme.fg("accent", "› ") : "";
-    const header = truncateToWidth(`${cursor}${name} ${this.theme.fg("muted", `· ${meta}`)}`, width);
+    const header = truncateToWidth(`${cursor}${name} ${this.theme.fg("muted", `· ${meta}`)}${tag ? ` · ${tag}` : ""}`, width);
     const tint = this.spec.main ? this.theme.fg("borderAccent", "─".repeat(Math.max(1, width))) : paintAgent(this.theme, this.spec.hue, "─".repeat(Math.max(1, width)));
     const rule = truncateToWidth(tint, width);
-    const visible = body.slice(this.offset, this.offset + rows);
+    const visible = body.slice(this.resolvedOffset(), this.resolvedOffset() + rows);
     const lines = [header, rule, ...visible];
     while (lines.length < height) lines.push("");
     return lines.slice(0, Math.max(1, height)).map((line) => truncateToWidth(line, width));
   }
+  /**
+   * Wrapped body lines. Blocks are cached per width and only the entries parsed
+   * since the last render are wrapped, so a live run appends instead of re-wrapping
+   * the whole transcript every second.
+   */
   private bodyLines(width: number): string[] {
-    if (this.cache && this.cache.width === width && this.cache.text === this.source.text) return this.cache.lines;
-    const inner = Math.max(1, width - 2);
-    const band = this.theme.style ? agentBand(this.theme, this.spec.hue) : undefined;
-    const paint = band && this.theme.style
-      ? (text: string) => this.theme.style!(text, { fg: band.fg, bg: band.bg })
-      : undefined;
-    const lines: string[] = [];
-    for (const entry of this.entries) {
-      const { label, body } = describeEntry(entry, this.theme, paint);
-      lines.push(truncateToWidth(label, width));
-      for (const raw of body.split("\n")) {
-        for (const wrapped of wrapTextWithAnsi(raw || " ", inner)) lines.push(truncateToWidth(`  ${wrapped}`, width));
-      }
-      lines.push("");
+    this.lastWidth = Math.max(1, width);
+    const matches = this.wrap?.width === width
+      && this.wrap.showThinking === this.filters.showThinking
+      && this.wrap.collapseResults === this.filters.collapseResults;
+    let current: WrapCache;
+    if (matches) current = this.wrap!;
+    else {
+      current = { width, showThinking: this.filters.showThinking, collapseResults: this.filters.collapseResults, entries: 0, blocks: [], flat: [], errors: [] };
+      this.wrap = current;
+      this.rebuilds += 1;
     }
-    if (lines.length) lines.pop();
-    this.cache = { width, text: this.source.text, lines };
-    return lines;
+    const inner = Math.max(1, width - 2);
+    const paint = this.band();
+    for (let index = current.entries; index < this.entries.length; index++) {
+      const entry = this.entries[index]!;
+      const block = this.wrapEntry(entry, width, inner, paint);
+      if (block) {
+        if (current.flat.length) current.flat.push("");
+        if (block.error) current.errors.push(current.flat.length);
+        current.flat.push(...block.lines);
+        current.blocks.push(block);
+      }
+    }
+    current.entries = this.entries.length;
+    return current.flat;
+  }
+  /** One entry as a block, honouring the filters; undefined means "hidden". */
+  private wrapEntry(entry: TranscriptEntry, width: number, inner: number, paint: ((text: string) => string) | undefined): WrapBlock | undefined {
+    if (entry.kind === "thinking" && !this.filters.showThinking) return undefined;
+    const described = describeEntry(entry, this.theme, paint);
+    let body = described.body;
+    if (entry.kind === "toolResult" && this.filters.collapseResults) {
+      const rows = body.split("\n");
+      if (rows.length > 1) body = `${rows[0]} (+${rows.length - 1} line${rows.length === 2 ? "" : "s"})`;
+    }
+    const lines = [truncateToWidth(described.label, width)];
+    for (const raw of body.split("\n")) {
+      for (const wrapped of wrapTextWithAnsi(raw || " ", inner)) lines.push(truncateToWidth(`  ${wrapped}`, width));
+    }
+    return { lines, error: entry.kind === "toolResult" && entry.isError };
   }
 }
 
@@ -386,25 +567,40 @@ export interface AgentTranscriptOptions {
   theme: FabricTheme;
   specs: readonly TranscriptPaneSpec[];
   onClose?: () => void;
+  /** `o`: the caller writes a Markdown copy and opens it in the editor. */
+  onOpen?: (pane: TranscriptPane) => void;
+  /** `y`: the caller copies the raw session file path. */
+  onCopy?: (pane: TranscriptPane) => void;
 }
 
 /**
  * The full-window transcript screen: one agent, or two side by side (a comparison
  * group). Each column keeps its own parser, scroll position and hue. Keys: tab
  * switches focus, `s` toggles one/two columns, page keys scroll the focused
- * column, esc steps back.
+ * column, esc steps back; `o` and `y` hand the focused run to the caller.
+ * Reading keys: `/` searches incrementally, `n`/`N` walk matches, `t` hides
+ * thinking, `r` collapses tool results, `e` jumps to the next failure.
  */
 export class AgentTranscriptOverlay implements Component {
   private readonly theme: FabricTheme;
   private readonly panes: TranscriptPane[];
   private readonly onClose?: () => void;
+  private readonly onOpen?: (pane: TranscriptPane) => void;
+  private readonly onCopy?: (pane: TranscriptPane) => void;
   private columns: 1 | 2;
   private focus = 0;
   private height = 24;
+  /** Search state: the query is kept after Enter so `n`/`N` can walk it. */
+  private query = "";
+  private searching = false;
+  /** Index of the match the view sits on, for `n`/`N`. */
+  private matchIndex = -1;
 
   constructor(options: AgentTranscriptOptions) {
     this.theme = options.theme;
     this.onClose = options.onClose;
+    this.onOpen = options.onOpen;
+    this.onCopy = options.onCopy;
     this.panes = options.specs.slice(0, 2).map((spec) => new TranscriptPane({ theme: options.theme, spec }));
     this.columns = this.panes.length > 1 ? 2 : 1;
   }
@@ -426,11 +622,59 @@ export class AgentTranscriptOverlay implements Component {
     return this.columns === 2 && this.panes.length > 1 && width >= MIN_TWO_COLUMN_WIDTH ? 2 : 1;
   }
   handleInput(input: string): void {
-    if (matchesKey(input, Key.escape)) { this.onClose?.(); return; }
+    const focused = this.panes[this.focus];
+    if (this.searching) {
+      if (matchesKey(input, Key.escape)) { this.searching = false; this.query = ""; this.matchIndex = -1; return; }
+      if (matchesKey(input, Key.enter)) { this.searching = false; return; }
+      if (matchesKey(input, Key.backspace)) this.query = this.query.slice(0, -1);
+      else if (input.length === 1 && input >= " ") this.query += input;
+      else return;
+      // Incremental: every keystroke jumps to the first match after the last one.
+      this.jump(1, true);
+      return;
+    }
+    if (matchesKey(input, Key.escape)) {
+      // Esc clears a search first, so a reader does not lose the run by accident.
+      if (this.query) { this.query = ""; this.matchIndex = -1; return; }
+      this.onClose?.();
+      return;
+    }
+    if (input === "/") { this.searching = true; this.query = ""; this.matchIndex = -1; return; }
+    if (input === "n" || input === "N") { if (this.query) this.jump(input === "n" ? 1 : -1, false); return; }
+    if (input === "t") { focused?.toggleThinking(); return; }
+    if (input === "r") { focused?.toggleResults(); return; }
+    if (input === "e") { this.jumpError(); return; }
     if (input === "s" && this.panes.length > 1) { this.columns = this.columns === 2 ? 1 : 2; return; }
     if (matchesKey(input, Key.tab) && this.panes.length > 1) { this.focus = (this.focus + 1) % this.panes.length; return; }
-    const focused = this.panes[this.focus];
+    if (input === "o") { if (focused) this.onOpen?.(focused); return; }
+    if (input === "y") { if (focused) this.onCopy?.(focused); return; }
     if (focused) focused.scroll(input);
+  }
+  /** Walks the focused pane's matches; `fromStart` ignores the current index (typing). */
+  private jump(direction: 1 | -1, fromStart: boolean): void {
+    const pane = this.panes[this.focus];
+    if (!pane) return;
+    const matches = pane.findMatches(this.query);
+    if (!matches.length) { this.matchIndex = -1; return; }
+    if (fromStart) this.matchIndex = direction > 0 ? 0 : matches.length - 1;
+    else this.matchIndex = (this.matchIndex + direction + matches.length) % matches.length;
+    pane.jumpToLine(matches[this.matchIndex]!);
+  }
+  /** `e`: the next failed tool result in the focused pane, wrapping once. */
+  private jumpError(): void {
+    const pane = this.panes[this.focus];
+    if (!pane) return;
+    const errors = pane.errorLines();
+    if (!errors.length) return;
+    const current = pane.getState().offset;
+    const next = errors.find((line) => line > current);
+    pane.jumpToLine(next ?? errors[0]!);
+  }
+  /** Matches for the footer; undefined while there is no query. */
+  private matchSummary(pane: TranscriptPane | undefined): string | undefined {
+    if (!this.query) return undefined;
+    const total = pane?.findMatches(this.query).length ?? 0;
+    return `${this.searching ? "/" : ""}${this.query}${this.searching ? "▍" : ""} · ${total} match${total === 1 ? "" : "es"}`;
   }
   render(width: number): string[] {
     if (width < 1) return [];
@@ -458,8 +702,17 @@ export class AgentTranscriptOverlay implements Component {
     return [...lines, "", footer].slice(0, height).map((line) => truncateToWidth(line, width));
   }
   private footer(width: number, columns: 1 | 2): string {
+    const focused = this.panes[this.focus];
+    const search = this.matchSummary(focused);
+    if (search) {
+      const hint = this.searching ? "enter keep · esc clear" : "n/N next · / new · esc clear";
+      return truncateToWidth(`${this.theme.fg("warning", search)} ${this.theme.fg("dim", hint)}`, width);
+    }
     // The narrow-terminal note goes first so a truncation cannot hide the explanation.
-    const parts = ["tab focus", "s one/two", "pgup/pgdn scroll", "esc back"];
+    const filters = focused?.filterState;
+    const parts = ["tab focus", "s one/two", "f follow", "/ search", "o open", "y path", "pgup/pgdn scroll", "esc back"];
+    if (filters && !filters.showThinking) parts.unshift("t thinking hidden");
+    if (filters?.collapseResults) parts.unshift("r results one line");
     const narrow = this.panes.length > 1 && columns === 1 && width < MIN_TWO_COLUMN_WIDTH;
     if (narrow) return truncateToWidth(`${this.theme.fg("warning", "one column: too narrow for two")} ${this.theme.fg("dim", parts.join(" · "))}`, width);
     return truncateToWidth(this.theme.fg("dim", parts.join(" · ")), width);

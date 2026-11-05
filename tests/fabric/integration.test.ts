@@ -1,9 +1,11 @@
 import { afterAll, test, expect } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import fabric from "../../extensions/fabric/index.ts";
+import { peekHeight } from "../../extensions/fabric/peek.ts";
 
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text };
 type Driver = (view: any, done: (value?: any) => void) => void;
@@ -25,6 +27,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const renderers = new Map<string, Function>();
+  const shortcuts = new Map<string, any>();
   const widgets = new Map<string, any>();
   const statuses: Array<[string, string | undefined]> = [];
   const overlays: any[] = [];
@@ -35,7 +38,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
     on: (name: string, fn: Function) => events.set(name, fn),
     registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
-    registerShortcut: () => {},
+    registerShortcut: (shortcut: string, options: any) => shortcuts.set(shortcut, options),
     registerEntryRenderer: (name: string, fn: Function) => renderers.set(name, fn),
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
   };
@@ -55,7 +58,7 @@ function harness(rootId: string, agents: Record<string, unknown>, entries: any[]
       }),
     },
   };
-  return { dir, ctx, pi, entries, events, tools, commands, renderers, widgets, statuses, overlays, drivers, notified,
+  return { dir, ctx, pi, entries, events, tools, commands, renderers, widgets, statuses, overlays, drivers, notified, shortcuts,
     cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -116,6 +119,10 @@ test("the durable result card survives and await_agents still reports its eviden
     let progress: any;
     const result = await host.tools.get("await_agents").execute("call", { agentIds: ["done"] }, undefined, (value: any) => progress = value, host.ctx);
     expect(progress.details.ui[0].result).toContain("Measured result");
+    // Collapsed (the default) is one line per agent; ctrl+o expands to the cards.
+    const collapsed = host.tools.get("await_agents").renderResult(result, { expanded: false }, theme).render(120).join("\n");
+    expect(collapsed).toContain("Measured result");
+    expect(collapsed).not.toContain("┌");
     expect(host.tools.get("await_agents").renderResult(result, { expanded: true }, theme).render(120).join("\n")).toContain("Measured result");
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
@@ -164,6 +171,74 @@ test("/agents lists main and the child, opens the run full-window, and Esc steps
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
+test("o writes a Markdown transcript next to the outputs and reports a missing editor", async () => {
+  const rootId = randomUUID();
+  const sessionPath = join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl");
+  const host = harness(rootId, {
+    child: { id: "child", label: "api-refactor", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString(), sessionPath },
+  });
+  writeFileSync(sessionPath, childSession("child", "Renamed the module and ran the tests."));
+  const savedEditor = process.env.PI_FABRIC_EDITOR;
+  process.env.PI_FABRIC_EDITOR = "/nonexistent/editor";
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    host.drivers.push((view) => { view.handleInput("j"); view.handleInput("\r"); });
+    host.drivers.push((view) => { view.handleInput("o"); view.handleInput("\u001b"); });
+    host.drivers.push((_view, done) => done(undefined));
+    await host.commands.get("agents").handler("", host.ctx);
+    const markdown = readFileSync(join(host.dir, "outputs", "child.transcript.md"), "utf8");
+    expect(markdown).toContain("# api-refactor");
+    expect(markdown).toContain("## Assistant");
+    expect(markdown).toContain("Renamed the module and ran the tests.");
+    const last = host.notified.at(-1)!;
+    expect(last).toContain("child.transcript.md");
+    expect(last).toContain("not on PATH");
+  } finally {
+    if (savedEditor === undefined) delete process.env.PI_FABRIC_EDITOR; else process.env.PI_FABRIC_EDITOR = savedEditor;
+    host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup();
+  }
+});
+
+test("/agents 2 and a name fragment open a run directly, and bad targets explain", async () => {
+  const rootId = randomUUID();
+  const sessionPath = join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl");
+  const host = harness(rootId, {
+    child: { id: "child", label: "api-refactor", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString(), sessionPath },
+  });
+  writeFileSync(sessionPath, childSession("child", "Opened by number."));
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  // No keybindings file in this agent dir, so Alt+1..9 is free and registers.
+  process.env.PI_CODING_AGENT_DIR = join(host.dir, "agent");
+  mkdirSync(join(host.dir, "agent"), { recursive: true });
+  try {
+    fabric(host.pi);
+    expect(host.shortcuts.has("alt+2")).toBe(true);
+    host.events.get("session_start")!({}, host.ctx);
+    // The first row is main, so 2 is the child; no list screen appears.
+    let text = "";
+    host.drivers.push((view) => { text = view.render(100).join("\n"); view.handleInput("\u001b"); });
+    await host.commands.get("agents").handler("2", host.ctx);
+    expect(text).toContain("Opened by number.");
+    text = "";
+    host.drivers.push((view) => { text = view.render(100).join("\n"); view.handleInput("\u001b"); });
+    await host.commands.get("agents").handler("api", host.ctx);
+    expect(text).toContain("Opened by number.");
+    await host.commands.get("agents").handler("9", host.ctx);
+    expect(host.notified.at(-1)).toContain("No agent 9");
+    await host.commands.get("agents").handler("zzz", host.ctx);
+    expect(host.notified.at(-1)).toContain("No live agent matches");
+    // Alt+2 is wired to the same row-number path.
+    text = "";
+    host.drivers.push((view) => { text = view.render(100).join("\n"); view.handleInput("\u001b"); });
+    await host.shortcuts.get("alt+2").handler(host.ctx);
+    expect(text).toContain("Opened by number.");
+  } finally {
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup();
+  }
+});
+
 test("a spawn batch opens as two columns and a group member can be read alone with s", async () => {
   const rootId = randomUUID();
   const host = harness(rootId, {
@@ -203,6 +278,104 @@ test("a spawn batch opens as two columns and a group member can be read alone wi
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
+test("the peek panel is off by default, and docks non-capturing when the config opts in", async () => {
+  // Off by default: no shortcut is registered and no keybinding is taken.
+  const offHost = harness(randomUUID(), { child: { id: "child", label: "api", model: "qwen", task: "t", status: "running" } });
+  try {
+    fabric(offHost.pi);
+    expect(offHost.shortcuts.has("ctrl+alt+f")).toBe(false);
+  } finally { offHost.cleanup(); }
+
+  const rootId = randomUUID();
+  const sessionPath = join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl");
+  const host = harness(rootId, {
+    child: { id: "child", label: "api", model: "qwen", task: "t", status: "running", startedAt: new Date().toISOString(), sessionPath },
+  });
+  writeFileSync(sessionPath, childSession("child", "Peek tail."));
+  const configPath = join(tmpdir(), `fabric-peek-${rootId}.json`);
+  writeFileSync(configPath, JSON.stringify({ maxActiveAgents: 6, models: {}, peekPanel: true }));
+  const saved = process.env.PI_FABRIC_CONFIG;
+  process.env.PI_FABRIC_CONFIG = configPath;
+  try {
+    fabric(host.pi);
+    expect(host.shortcuts.get("ctrl+alt+f")?.description).toContain("Peek");
+    host.events.get("session_start")!({}, host.ctx);
+    let frame: string[] = [];
+    host.drivers.push((view) => { frame = view.render(60); });
+    const pending = host.shortcuts.get("ctrl+alt+f").handler(host.ctx);
+    expect(frame).toHaveLength(peekHeight(40));
+    expect(frame.join("\n")).toContain("◆ peek · api");
+    expect(frame.join("\n")).toContain("Peek tail.");
+    for (const line of frame) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+    expect(host.overlays.at(-1)).toMatchObject({ overlay: true, overlayOptions: { nonCapturing: true } });
+    // The same shortcut closes the panel instead of stacking a second one.
+    await host.shortcuts.get("ctrl+alt+f").handler(host.ctx);
+    await pending;
+    expect(host.overlays).toHaveLength(1);
+  } finally {
+    if (saved === undefined) delete process.env.PI_FABRIC_CONFIG; else process.env.PI_FABRIC_CONFIG = saved;
+    rmSync(configPath, { force: true });
+    host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup();
+  }
+});
+
+
+test("more than three live agents collapse the rows to one strip, with failures on their own line", async () => {
+  const rootId = randomUUID();
+  const now = new Date().toISOString();
+  const host = harness(rootId, {
+    "run-1": { id: "run-1", label: "Runner one", model: "qwen", task: "t", status: "running", startedAt: now },
+    "run-2": { id: "run-2", label: "Runner two", model: "qwen", task: "t", status: "running", startedAt: now },
+    "run-3": { id: "run-3", label: "Runner three", model: "qwen", task: "t", status: "waiting", startedAt: now },
+    "bad-4": { id: "bad-4", label: "Broken four", model: "qwen", task: "t", status: "error", finishedAt: now, error: "exit 3: build failed\nstack" },
+  });
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    const lines = host.widgets.get("pi-fabric-agents")({}, theme).render(100);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("◆ fabric 2● 1◌ 1× · /agents");
+    expect(lines[1]).toContain("Broken four");
+    expect(lines[1]).toContain("exit 3: build failed");
+    // The tree itself stays available in /agents.
+    let listText = "";
+    host.drivers.push((view, done) => { listText = view.render(100).join("\n"); done(undefined); });
+    await host.commands.get("agents").handler("", host.ctx);
+    expect(listText).toContain("Runner one");
+    expect(listText).toContain("Broken four");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
+
+test("per-agent cost, tokens and last tool are folded from the child session", async () => {
+  const rootId = randomUUID();
+  const sessionPath = join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_child.jsonl");
+  const usageLine = (tokens: number, cost: number, tool: string) => JSON.stringify({
+    type: "message",
+    message: { role: "assistant", content: [{ type: "text", text: "work" }, { type: "toolCall", name: tool }], usage: { input: tokens, output: 10, totalTokens: tokens, cost: { total: cost } } },
+  });
+  const host = harness(rootId, {
+    child: { id: "child", label: "api-refactor", model: "qwen", task: "t", status: "done", finishedAt: new Date().toISOString(), sessionPath, resultPath: join(tmpdir(), "pi-fabric", rootId, "outputs", "child.md") },
+  });
+  writeFileSync(sessionPath, `${usageLine(12_000, 0.04, "read")}\n${usageLine(3_000, 0.01, "bash")}\n`);
+  writeFileSync(join(host.dir, "outputs", "child.md"), "Done.");
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    // Wide rows show the fold of both turns; a narrow row drops it first.
+    const wide = host.widgets.get("pi-fabric-agents")({}, theme).render(120).join("\n");
+    expect(wide).toContain("$0.05 · 15k · bash");
+    expect(host.widgets.get("pi-fabric-agents")({}, theme).render(80).join("\n")).not.toContain("$0.05");
+    // The recorded result card carries the real numbers instead of "agent-reported".
+    const entry = host.entries.find((item) => item.customType === "pi-fabric-result")!;
+    expect(entry.data.agents[0]).toMatchObject({ cost: 0.05, tokens: 15_000, lastTool: "bash" });
+    const card = host.renderers.get("pi-fabric-result")!(entry, { expanded: true }, theme).render(120).join("\n");
+    expect(card).toContain("cost: $0.05");
+    expect(card).toContain("tokens: 15k");
+    expect(card).toContain("tool: bash");
+    expect(card).not.toContain("agent-reported");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
+
 test("an agent idle for ten minutes is gone from the UI but still reported by agent_status", async () => {
   const rootId = randomUUID();
   const host = harness(rootId, {
@@ -225,6 +398,45 @@ test("an agent idle for ten minutes is gone from the UI but still reported by ag
     const status = await host.tools.get("agent_status").execute("call", {}, undefined, undefined, host.ctx);
     expect(status.content[0].text).toContain("Stale run");
     expect(status.content[0].text).toContain("gone from the rows and /agents");
+  } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
+});
+
+test("a failure is explained on its row, counted in its group, toasts once, and stays until opened", async () => {
+  const rootId = randomUUID();
+  const old = new Date(Date.now() - 30 * 60_000).toISOString();
+  const sessionPath = join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_broken.jsonl");
+  const host = harness(rootId, {
+    broken: { id: "broken", label: "Broken", model: "qwen", task: "t", status: "error", finishedAt: old, sessionPath, error: "exit 2: tests failed\n      stack frame" },
+    "run-3333": { id: "run-3333", label: "Run", model: "qwen", task: "t", status: "running", batchId: "call-1", startedAt: new Date().toISOString() },
+    "bad-2222": { id: "bad-2222", label: "Bad", model: "qwen", task: "t", status: "error", batchId: "call-1", finishedAt: old, error: "second failure" },
+  });
+  writeFileSync(sessionPath, childSession("broken", "Failure transcript."));
+  try {
+    fabric(host.pi);
+    host.events.get("session_start")!({}, host.ctx);
+    const rows = () => host.widgets.get("pi-fabric-agents")({}, theme).render(100).join("\n");
+    // A failed run older than the sweep still shows, with its first error line, not its last activity.
+    expect(rows()).toContain("Broken");
+    expect(rows()).toContain("exit 2: tests failed");
+    expect(rows()).not.toContain("stack frame");
+    // The group row keeps the failure visible next to its running sibling.
+    expect(rows()).toContain("1● 1×");
+    // One toast per failure; a second refresh pass does not repeat them.
+    const failures = () => host.notified.filter((message) => message.includes("failed"));
+    expect(failures()).toHaveLength(2);
+    host.events.get("session_start")!({}, host.ctx);
+    expect(failures()).toHaveLength(2);
+
+    // Opening the run acknowledges the failure and it leaves the rows.
+    host.drivers.push((view) => { view.handleInput("j"); view.handleInput("\r"); });
+    host.drivers.push((view) => { expect(view.render(100).join("\n")).toContain("Failure transcript."); view.handleInput("\u001b"); });
+    host.drivers.push((_view, done) => done(undefined));
+    await host.commands.get("agents").handler("", host.ctx);
+    const state = JSON.parse(readFileSync(join(host.dir, "state.json"), "utf8"));
+    expect(state.agents.broken.dismissed).toBe(true);
+    expect(state.agents["bad-2222"].dismissed).toBeUndefined();
+    expect(rows()).not.toContain("Broken");
+    expect(rows()).toContain("1● 1×");
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 

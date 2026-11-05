@@ -2,20 +2,23 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, renameSync, openSync, closeSync, readSync } from "node:fs";
 import { clean, publishActivity, readActivity, readPreview } from "./activity.ts";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptPaneSpec, type TranscriptSource } from "./ui.ts";
+import { copyToClipboard } from "@earendil-works/pi-coding-agent";
+import { Key, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, TranscriptPane, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptPaneSpec, type TranscriptSource } from "./ui.ts";
+import { PEEK_KEYS, PEEK_OVERLAY_OPTIONS, peekHeight, peekTarget, renderPeekPanel } from "./peek.ts";
 import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen, fitScreen, fullScreenOpen, windowHeight } from "../shared/full-screen.ts";
-import { assignHues, buildTree, renderAgentRows, type AgentRow, type AgentSnapshot } from "./agents.ts";
+import { assignHues, buildTree, COMPACT_AGENT_ROWS, renderAgentRows, renderAgentStrip, type AgentRow, type AgentSnapshot } from "./agents.ts";
+import { formatUsage, sessionUsage, usageMetrics, type SessionUsage } from "./usage.ts";
 import { Type, type Static } from "typebox";
 
 type AgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
 
 export type ModelRule = { id: string; rank: number; description?: string };
-export type FabricConfig = { maxActiveAgents: number; models: Record<string, ModelRule> };
+export type FabricConfig = { maxActiveAgents: number; models: Record<string, ModelRule>; /** The docked peek panel; off by default until it is judged in a real terminal. */ peekPanel?: boolean };
 type FabricAgent = {
   id: string;
   parentId?: string;
@@ -39,6 +42,10 @@ type FabricAgent = {
   patchPath?: string;
   baseCommit?: string;
   error?: string;
+  /** A failed run the human opened; it leaves the rows from then on. */
+  dismissed?: boolean;
+  /** The failure was already surfaced as a toast, so a reload does not repeat it. */
+  notified?: boolean;
 };
 export type FabricState = { rootId: string; repo: string; createdAt: string; config: FabricConfig; agents: Record<string, FabricAgent> };
 
@@ -47,7 +54,7 @@ const LEGACY_CONFIG_PATH = join(dirname(ENTRY_PATH), "config.json");
 const ROOT_ENV = "PI_FABRIC_ROOT";
 const AGENT_ENV = "PI_FABRIC_AGENT";
 const MODEL_ENV = "PI_FABRIC_MODEL";
-const DEFAULT_CONFIG: FabricConfig = { maxActiveAgents: 6, models: {} };
+const DEFAULT_CONFIG: FabricConfig = { maxActiveAgents: 6, models: {}, peekPanel: false };
 
 const AgentRequest = Type.Object({
   model: Type.String({ description: "Configured model alias or model id. It must be the caller's model or lower-ranked." }),
@@ -76,6 +83,30 @@ function lockPath(rootId: string) { return join(fabricDir(rootId), ".lock"); }
 function outputDir(rootId: string) { return join(fabricDir(rootId), "outputs"); }
 function sessionsDir(rootId: string) { return join(fabricDir(rootId), "sessions"); }
 
+/** True when a command is runnable: an absolute path, or a name found on PATH. */
+export function onPath(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (command.includes("/")) return existsSync(command);
+  return (env.PATH ?? "").split(delimiter).filter(Boolean).some((dir) => existsSync(join(dir, command)));
+}
+
+/**
+ * Writes a Markdown copy of a run and opens it in the editor (`zed` on PATH,
+ * `PI_FABRIC_EDITOR` overrides). Returns the message to show the human.
+ */
+export function openTranscriptInEditor(source: { dir: string; id: string; markdown: string }, env: NodeJS.ProcessEnv = process.env): string {
+  const file = join(source.dir, `${source.id}.transcript.md`);
+  mkdirSync(source.dir, { recursive: true });
+  writeFileSync(file, source.markdown);
+  const editor = env.PI_FABRIC_EDITOR ?? "zed";
+  if (!onPath(editor, env)) return `Saved ${file}. "${editor}" is not on PATH; set PI_FABRIC_EDITOR to open it.`;
+  const child = spawn(editor, [file], { detached: true, stdio: "ignore" });
+  child.on("error", (error) => {
+    if (env.PI_FABRIC_DEBUG) process.stderr.write(`fabric: ${editor} failed: ${error.message}\n`);
+  });
+  child.unref();
+  return `Saved ${file} and opened it in ${editor}.`;
+}
+
 /** An agent that stays idle this long leaves the rows and `/agents`. */
 export const IDLE_GONE_MS = 10 * 60_000;
 /** Upper bound for a replayed transcript; the saved file keeps everything. */
@@ -96,7 +127,10 @@ export function resolveSessionFile(dir: string, agentId: string): string | undef
 }
 
 /** True when a terminal agent has been idle past the window; display-only. */
-export function isGone(agent: { status: AgentStatus; finishedAt?: string }, now = Date.now(), idleMs = IDLE_GONE_MS): boolean {
+export function isGone(agent: { status: AgentStatus; finishedAt?: string; dismissed?: boolean }, now = Date.now(), idleMs = IDLE_GONE_MS): boolean {
+  // A failed run waits for the human: it leaves only after its transcript was opened,
+  // so a failure inside a busy batch cannot disappear before it is read.
+  if (agent.status === "error") return agent.dismissed === true;
   if (!terminal(agent.status) || !agent.finishedAt) return false;
   const finished = Date.parse(agent.finishedAt);
   return Number.isFinite(finished) && now - finished > idleMs;
@@ -105,6 +139,62 @@ export function isGone(agent: { status: AgentStatus; finishedAt?: string }, now 
 /** Agents the live surfaces show: everything except ones that went idle. */
 export function liveAgents<T extends { status: AgentStatus; finishedAt?: string }>(agents: T[], now = Date.now(), idleMs = IDLE_GONE_MS): T[] {
   return agents.filter((agent) => !isGone(agent, now, idleMs));
+}
+
+/**
+ * Best match for `/agents <fragment>`: exact label or id, then a prefix, then a
+ * substring, in creation order so the answer is stable.
+ */
+export function matchAgent<T extends { id: string; label: string }>(agents: readonly T[], query: string): T | undefined {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return undefined;
+  const score = (agent: T): number => {
+    const label = agent.label.toLowerCase();
+    const id = agent.id.toLowerCase();
+    if (label === needle || id === needle) return 3;
+    if (label.startsWith(needle) || id.startsWith(needle)) return 2;
+    if (label.includes(needle) || id.includes(needle)) return 1;
+    return 0;
+  };
+  let best: T | undefined;
+  let bestScore = 0;
+  for (const agent of agents) {
+    const value = score(agent);
+    if (value > bestScore) { best = agent; bestScore = value; }
+  }
+  return best;
+}
+
+const ALT_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
+const ALT_JUMP_KEYS = ALT_DIGITS.map((digit) => `alt+${digit}`);
+
+/** Every Alt+<n> a keybindings file already assigns, lowercased. */
+export function altJumpConflicts(keys: readonly string[], bindings: unknown): string[] {
+  if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) return [];
+  const wanted = new Set(keys.map((key) => key.toLowerCase()));
+  const conflicts = new Set<string>();
+  for (const value of Object.values(bindings as Record<string, unknown>)) {
+    for (const key of Array.isArray(value) ? value : [value]) {
+      if (typeof key === "string" && wanted.has(key.toLowerCase())) conflicts.add(key.toLowerCase());
+    }
+  }
+  return [...conflicts];
+}
+
+/**
+ * Alt+1..9 registers only when nothing else claims it: a `<agent-dir>/keybindings.json`
+ * binding turns it off, as does `PI_FABRIC_ALT_JUMP=0`. Pi warns on an
+ * extension-vs-extension duplicate and the later registration wins, so this flag is
+ * also the way to keep another extension's Alt+<n>.
+ */
+export function altJumpAllowed(env: NodeJS.ProcessEnv = process.env, home = homedir()): boolean {
+  if (["0", "false", "off", "no"].includes((env.PI_FABRIC_ALT_JUMP ?? "").toLowerCase())) return false;
+  const dir = env.PI_CODING_AGENT_DIR ? resolve(env.PI_CODING_AGENT_DIR) : join(home, ".pi", "agent");
+  const path = join(dir, "keybindings.json");
+  if (!existsSync(path)) return true;
+  try {
+    return altJumpConflicts(ALT_JUMP_KEYS, JSON.parse(readFileSync(path, "utf8")) as unknown).length === 0;
+  } catch { return false; }
 }
 
 /**
@@ -128,14 +218,34 @@ export function readSessionChunk(path: string, offset: number): { chunk: string;
   } catch { return { chunk: "", next: offset }; }
 }
 
-/** Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer. */
+/**
+ * Reads a saved transcript for replay, bounded so a huge run cannot stall the viewer.
+ * Above the cap the head is dropped instead of the tail, and the returned `offset`
+ * lets live tailing continue from where the kept text ends.
+ */
 export function readTranscript(path: string, limit = TRANSCRIPT_LIMIT): TranscriptSource {
   try {
-    const text = readFileSync(path, "utf8");
-    if (text.length <= limit) return { text };
-    return { text: text.slice(0, limit), notice: `Transcript truncated to the first ${limit} characters; ${path} keeps the whole run.` };
+    const buffer = readFileSync(path);
+    const start = Math.max(0, buffer.length - limit);
+    const tail = buffer.subarray(start).toString("utf8");
+    // A cut through the middle of a line leaves a fragment; skip past it. Then only
+    // whole lines replay, so live tailing resumes exactly at the next line boundary.
+    const firstBreak = start > 0 ? tail.indexOf("\n") : -1;
+    const headChars = start > 0 && firstBreak < 0 ? tail.length : firstBreak + 1;
+    const headBytes = Buffer.byteLength(tail.slice(0, headChars), "utf8");
+    const body = tail.slice(headChars);
+    const lastBreak = body.lastIndexOf("\n");
+    const text = lastBreak >= 0 ? body.slice(0, lastBreak + 1) : "";
+    const offset = start + headBytes + Buffer.byteLength(text, "utf8");
+    if (start === 0) return { text, offset, live: true };
+    return {
+      text,
+      offset,
+      live: true,
+      notice: `Showing the last ${(buffer.length - start) >> 10} KB of ${buffer.length >> 10} KB; the head is hidden and the run keeps following.`,
+    };
   } catch (error) {
-    return { text: "", notice: `Unable to read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+    return { text: "", notice: `Unable to read ${path}: ${error instanceof Error ? error.message : String(error)}`, live: false };
   }
 }
 
@@ -143,9 +253,11 @@ export type ConfigResolution = { config: FabricConfig; path?: string; source: "e
 
 function validateConfig(value: unknown, path: string): FabricConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Pi Fabric config at ${path} must be a JSON object.`);
-  const input = value as { maxActiveAgents?: unknown; models?: unknown };
+  const input = value as { maxActiveAgents?: unknown; models?: unknown; peekPanel?: unknown };
   const maxActiveAgents = input.maxActiveAgents ?? DEFAULT_CONFIG.maxActiveAgents;
   if (typeof maxActiveAgents !== "number" || !Number.isInteger(maxActiveAgents) || maxActiveAgents < 1) throw new Error(`Pi Fabric config at ${path}: maxActiveAgents must be a positive integer.`);
+  const peekPanel = input.peekPanel ?? DEFAULT_CONFIG.peekPanel;
+  if (typeof peekPanel !== "boolean") throw new Error(`Pi Fabric config at ${path}: peekPanel must be a boolean.`);
   const models = input.models ?? {};
   if (!models || typeof models !== "object" || Array.isArray(models)) throw new Error(`Pi Fabric config at ${path}: models must be an object.`);
   const checked: Record<string, ModelRule> = {};
@@ -157,7 +269,7 @@ function validateConfig(value: unknown, path: string): FabricConfig {
     if (rule.description !== undefined && typeof rule.description !== "string") throw new Error(`Pi Fabric config at ${path}: model '${alias}' description must be a string.`);
     checked[alias] = { id: rule.id, rank: rule.rank, ...(rule.description === undefined ? {} : { description: rule.description }) };
   }
-  return { maxActiveAgents: maxActiveAgents as number, models: checked };
+  return { maxActiveAgents: maxActiveAgents as number, models: checked, peekPanel: peekPanel as boolean };
 }
 
 export function resolveConfig(env: NodeJS.ProcessEnv = process.env, home = homedir(), legacyPath = LEGACY_CONFIG_PATH): ConfigResolution {
@@ -379,6 +491,8 @@ export default function piFabric(pi: ExtensionAPI) {
   let rootId = process.env[ROOT_ENV] ?? "";
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const recorded = new Set<string>();
+  /** Failures toasted this session; a fallback when the state file cannot record the marker. */
+  const notifiedFailures = new Set<string>();
   // The coordinator chat is an agent too: rows and `/agents` show it beside its children.
   const sessionStartedAt = new Date().toISOString();
   let mainBusy = false;
@@ -388,12 +502,36 @@ export default function piFabric(pi: ExtensionAPI) {
   const collapsed = new Set<string>();
   /** Group ids whose members are listed; spawn batches stay one row until expanded. */
   const expandedGroups = new Set<string>();
+  /** Closes the open peek panel; the shortcut toggles it. */
+  let peekClose: (() => void) | undefined;
+  /** Per-agent usage folded from its session, with a byte cursor so the tick reads only new lines. */
+  const usageCache = new Map<string, { path: string; cursor: number; usage: SessionUsage }>();
+
+  /**
+   * Cost, tokens and last tool for one agent, folded from its saved session. Only
+   * the bytes appended since the last tick are read, so the refresh stays cheap.
+   */
+  function agentUsage(agent: FabricAgent): SessionUsage | undefined {
+    if (!rootId) return undefined;
+    const path = agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), agent.id);
+    if (!path || !existsSync(path)) return undefined;
+    const previous = usageCache.get(agent.id);
+    try {
+      const next = sessionUsage(path, previous?.path === path ? previous.cursor : 0, previous?.path === path ? previous.usage : undefined);
+      usageCache.set(agent.id, { path, cursor: next.cursor, usage: next.usage });
+      return next.usage;
+    } catch {
+      return previous?.usage;
+    }
+  }
 
   function views(agents: FabricAgent[], includePatch = false): FabricAgentView[] {
     return agents.map(agent => {
       const activity = readActivity(fabricDir(rootId), agent.id);
+      const usage = agentUsage(agent);
       return { ...agent, label: clean(agent.label, 150), task: clean(agent.task, 1000),
         model: agent.model.split("/").pop()!, error: agent.error ? clean(agent.error) : undefined,
+        cost: usage?.cost, tokens: usage?.tokens, lastTool: usage?.lastTool,
         activity: activity.items.at(-1)?.text.split("\n")[0],
         events: activity.items.map(item => `${item.at.slice(11, 19)} · ${item.kind === "finding" ? "Agent reports" : item.kind}\n${item.text}`).join("\n\n"),
         tools: activity.items.filter(item => item.kind === "tool" || item.kind === "error").map(item => `${item.at.slice(11, 19)} ${item.text}`).join("\n"),
@@ -405,22 +543,33 @@ export default function piFabric(pi: ExtensionAPI) {
   function comparison(agents: FabricAgentView[], theme: FabricTheme, expanded = false, title = "◆ FABRIC · Parallel results") {
     return { invalidate() {}, render(width: number) {
       if (!agents.length) return [truncateToWidth("No child agents.", width)];
+      // Collapsed is one line per run; ctrl+o expands to the comparison cards.
+      if (!expanded) return agents.map((agent) => resultLine(agent, theme, width));
       const card = (agent: FabricAgentView): ComparisonResult => ({ label: `${agent.label} · ${agent.status}`,
         status: agent.status === "done" ? "success" : agent.status === "error" ? "error" : "neutral",
         summary: agent.result || agent.error || agent.activity || "Awaiting evidence…",
         details: agent.patchPath ? `Patch: ${agent.patchPath}` : agent.task,
-        metrics: { model: agent.model, evidence: "agent-reported" },
+        // Real numbers from the child session instead of the old "agent-reported" label.
+        metrics: { model: agent.model, ...usageMetrics(agent.cost === undefined ? undefined : { cost: agent.cost, tokens: agent.tokens ?? 0, lastTool: agent.lastTool, turns: 0 }) },
       });
-      const visible = expanded ? agents : agents.slice(0, 2);
       const lines: string[] = [];
-      for (let i = 0; i < visible.length; i += 2) {
+      for (let i = 0; i < agents.length; i += 2) {
+        // No placeholder card: an odd result set ends with one full-width card.
         lines.push(...renderComparisonResultCard({ title: i === 0 ? title : undefined,
-          left: card(visible[i]!), right: visible[i + 1] ? card(visible[i + 1]!) : { label: "Evidence", summary: "Review reported findings and saved patches before integration. `/agents` opens any run." },
-          maxBodyLines: expanded ? 12 : 6 }, theme, width));
+          left: card(agents[i]!), right: agents[i + 1] ? card(agents[i + 1]!) : undefined,
+          maxBodyLines: 12 }, theme, width));
       }
-      if (agents.length > visible.length) lines.push(truncateToWidth(`+ ${agents.length - visible.length} more · expand the tool output or open /agents`, width));
       return lines;
     } };
+  }
+
+  /** One result line: status, label, model, and the first line of what came back. */
+  function resultLine(agent: FabricAgentView, theme: FabricTheme, width: number): string {
+    const icon = agent.status === "done" ? theme.fg("success", "✓") : agent.status === "error" ? theme.fg("error", "×")
+      : agent.status === "running" ? theme.fg("accent", "●") : theme.fg("warning", "○");
+    const summary = (agent.result || agent.error || agent.activity || "queued").split("\n")[0] ?? "";
+    const patch = agent.patchPath ? theme.fg("dim", " · patch") : "";
+    return truncateToWidth(`${icon} ${theme.fg("accent", agent.label)} ${theme.fg("muted", `· ${agent.model} · ${summary}`)}${patch}`, width);
   }
 
   /** Session files by agent id, read once per call instead of once per agent. */
@@ -452,19 +601,29 @@ export default function piFabric(pi: ExtensionAPI) {
 
   /** Live delegated agents as rows, with the last thing each one did. */
   function agentSnapshots(state: FabricState, sessions: Map<string, string>): AgentSnapshot[] {
-    return liveAgents(Object.values(state.agents)).map((agent) => ({
-      id: agent.id,
-      kind: "agent" as const,
-      label: clean(agent.label, 80),
-      model: agent.model.split("/").pop() ?? agent.model,
-      status: agent.status,
-      activity: readActivity(fabricDir(rootId), agent.id).items.at(-1)?.text.split("\n")[0],
-      startedAt: agent.startedAt,
-      finishedAt: agent.finishedAt,
-      parentId: agent.parentId,
-      batchId: agent.batchId,
-      sessionPath: agent.sessionPath ?? sessions.get(agent.id),
-    }));
+    return liveAgents(Object.values(state.agents)).map((agent) => {
+      const lastActivity = readActivity(fabricDir(rootId), agent.id).items.at(-1)?.text.split("\n")[0];
+      // A failed run explains itself: its first error line replaces the last activity.
+      const detail = agent.status === "error" && agent.error
+        ? clean(agent.error, 160).split("\n")[0]
+        : lastActivity;
+      const usage = agentUsage(agent);
+      return {
+        id: agent.id,
+        kind: "agent" as const,
+        label: clean(agent.label, 80),
+        model: agent.model.split("/").pop() ?? agent.model,
+        status: agent.status,
+        activity: detail,
+        usage: formatUsage(usage) || undefined,
+        startedAt: agent.startedAt,
+        finishedAt: agent.finishedAt,
+        parentId: agent.parentId,
+        batchId: agent.batchId,
+        dismissed: agent.dismissed,
+        sessionPath: agent.sessionPath ?? sessions.get(agent.id),
+      };
+    });
   }
 
   /** The rows below the prompt and the `/agents` list share this tree. */
@@ -488,7 +647,26 @@ export default function piFabric(pi: ExtensionAPI) {
     const path = agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), id);
     const rows = treeRows(ctx);
     const hue = rows.find((row) => row.id === id)?.hue ?? 0;
-    return { id, label: clean(agent.label, 80), model: agent.model.split("/").pop() ?? agent.model, status: agent.status, hue, path };
+    return { id, label: clean(agent.label, 80), model: agent.model.split("/").pop() ?? agent.model, status: agent.status, hue, path, usage: formatUsage(agentUsage(agent)) || undefined };
+  }
+
+  /**
+   * Opening a failed run acknowledges it. Until then the row and `/agents` keep it
+   * visible regardless of how long ago it stopped.
+   */
+  function dismissFailed(ids: readonly string[]): void {
+    if (!rootId || !existsSync(statePath(rootId))) return;
+    try {
+      withLock(rootId, () => {
+        const state = loadState(rootId);
+        let changed = false;
+        for (const id of ids) {
+          const agent = state.agents[id];
+          if (agent?.status === "error" && !agent.dismissed) { agent.dismissed = true; changed = true; }
+        }
+        if (changed) saveState(rootId, state);
+      });
+    } catch { /* Best effort: opening still shows the run. */ }
   }
 
   /**
@@ -504,8 +682,9 @@ export default function piFabric(pi: ExtensionAPI) {
       const path = spec ? (spec.id === "main" ? ctx.sessionManager.getSessionFile?.() : spec.path) : undefined;
       if (!spec || !path || !existsSync(path)) continue;
       const initial = readTranscript(path);
-      specs.push({ ...spec, read: () => initial });
-      sources.push({ id, path, cursor: Buffer.byteLength(initial.text.slice(0, initial.text.lastIndexOf("\n") + 1), "utf8"), done: Boolean(initial.notice) });
+      // The pane carries its own path so `y` can hand over the raw JSONL.
+      specs.push({ ...spec, path, read: () => initial });
+      sources.push({ id, path, cursor: initial.offset ?? Buffer.byteLength(initial.text, "utf8"), done: initial.live === false });
     }
     if (!specs.length) {
       const mainOnly = wanted.length === 1 && wanted[0] === "main";
@@ -516,11 +695,29 @@ export default function piFabric(pi: ExtensionAPI) {
       ctx.ui.notify(`Transcripts need the interactive UI. Saved session: ${sources[0]!.path}`, "info");
       return;
     }
+    // The run is open from here on, so a failed one can leave the rows.
+    dismissFailed(specs.map((spec) => spec.id));
     const hidden = wanted.length - specs.length;
     let timer: ReturnType<typeof setInterval> | undefined;
     try {
       await withScreen(ctx, () => ctx.ui.custom((tui, theme, _keys, done) => {
-        const overlay = new AgentTranscriptOverlay({ theme, specs, onClose: () => done(undefined) });
+        const overlay = new AgentTranscriptOverlay({
+          theme, specs, onClose: () => done(undefined),
+          onOpen: (pane) => {
+            try {
+              ctx.ui.notify(openTranscriptInEditor({ dir: outputDir(rootId), id: pane.id, markdown: pane.markdown() }), "info");
+            } catch (error) {
+              ctx.ui.notify(`Could not write the transcript: ${error instanceof Error ? error.message : String(error)}`, "error");
+            }
+          },
+          onCopy: (pane) => {
+            const path = pane.path;
+            if (!path) { ctx.ui.notify(`No saved session file for ${pane.label}.`, "warning"); return; }
+            copyToClipboard(path)
+              .then(() => ctx.ui.notify(`Copied ${path}`, "info"))
+              .catch(() => ctx.ui.notify(`Session file: ${path}`, "info"));
+          },
+        });
         timer = setInterval(() => {
           try {
             for (const source of sources) {
@@ -544,6 +741,77 @@ export default function piFabric(pi: ExtensionAPI) {
       }));
     } finally { if (timer) clearInterval(timer); }
     if (hidden > 0) ctx.ui.notify(`${hidden} more agent(s) in this group; open them from /agents.`, "info");
+  }
+
+  /** One row opens its transcript; a group opens its members side by side. */
+  async function openRow(ctx: ExtensionContext, row: AgentRow): Promise<void> {
+    await showTranscript(ctx, row.kind === "group" ? (row.members ?? []) : [row.id]);
+  }
+
+  /** `/agents <n>` and Alt+<n>: the row at that 1-based position. */
+  async function openRowNumber(ctx: ExtensionContext, index: number): Promise<void> {
+    if (!rootId || !existsSync(statePath(rootId))) return;
+    const rows = treeRows(ctx);
+    const row = rows[index - 1];
+    if (row) await openRow(ctx, row);
+  }
+
+  /**
+   * The peek spike: a right-docked, non-capturing panel that follows one live
+   * run's tail while typing continues in the chat. The shortcut toggles it, and it
+   * only exists when `peekPanel` is enabled in the Fabric config.
+   */
+  async function showPeek(ctx: ExtensionContext): Promise<void> {
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify("The peek panel needs the interactive UI.", "info");
+      return;
+    }
+    // A second press closes the panel instead of opening a duplicate.
+    if (peekClose) { peekClose(); return; }
+    if (!rootId || !existsSync(statePath(rootId))) {
+      ctx.ui.notify(`Pi Fabric has no agents in this session yet. ${PEEK_KEYS} again to close.`, "info");
+      return;
+    }
+    let state: FabricState;
+    try { state = loadState(rootId); } catch { ctx.ui.notify("Pi Fabric state is unavailable.", "error"); return; }
+    const target = peekTarget(liveAgents(Object.values(state.agents)));
+    if (!target) { ctx.ui.notify("No live Fabric agent to peek at.", "info"); return; }
+    const spec = paneSpec(ctx, target.id);
+    const path = target.sessionPath ?? spec?.path ?? resolveSessionFile(sessionsDir(rootId), target.id);
+    if (!spec || !path || !existsSync(path)) {
+      ctx.ui.notify(`${clean(target.label, 60)} has no saved transcript yet; it appears once the child starts working.`, "warning");
+      return;
+    }
+    const initial = readTranscript(path);
+    let cursor = initial.offset ?? Buffer.byteLength(initial.text, "utf8");
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      await ctx.ui.custom((tui, theme, _keys, done) => {
+        const pane = new TranscriptPane({ theme, spec: { ...spec, path, read: () => initial } });
+        peekClose = () => done(undefined);
+        timer = setInterval(() => {
+          try {
+            const read = readSessionChunk(path, cursor);
+            if (!read.chunk) return;
+            cursor = read.next;
+            if (pane.appendText(read.chunk)) tui.requestRender();
+          } catch { /* Keep the last tail that rendered. */ }
+        }, 1000);
+        return {
+          invalidate: () => pane.invalidate(),
+          // Non-capturing: keys stay in the main editor, so this never sees input.
+          handleInput: () => { /* the shortcut closes the panel */ },
+          render: (width: number) => {
+            const height = peekHeight(tui.terminal.rows);
+            const rows = pane.visibleRows(Math.max(1, width - 3), Math.max(1, height - 4));
+            return renderPeekPanel({ label: pane.label, status: spec.status, rows }, theme, width, height);
+          },
+        };
+      }, { overlay: true, overlayOptions: { ...PEEK_OVERLAY_OPTIONS } });
+    } finally {
+      peekClose = undefined;
+      if (timer) clearInterval(timer);
+    }
   }
 
   /** `/agents`: the only keyboard path to a transcript. Esc from a run returns here. */
@@ -591,7 +859,7 @@ export default function piFabric(pi: ExtensionAPI) {
         }));
       } finally { if (timer) clearInterval(timer); }
       if (!chosen) return;
-      await showTranscript(ctx, chosen.kind === "group" ? (chosen.members ?? []) : [chosen.id]);
+      await openRow(ctx, chosen);
     }
   }
 
@@ -636,17 +904,38 @@ export default function piFabric(pi: ExtensionAPI) {
     const state = loadState(rootId);
     const agents = Object.values(state.agents);
     const live = liveAgents(agents);
+    const snapshots = agentSnapshots(state, sessionIndex());
     // The rows are the only always-on surface: they appear with the first child and
     // disappear again when the main chat is alone.
     if (!live.length) {
       ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
+    } else if (snapshots.length > COMPACT_AGENT_ROWS) {
+      // Past three live agents one strip replaces the tree; failures keep their own line.
+      ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, (_tui, theme) => ({ invalidate() { /* rebuilt per tick */ }, render: (width) => renderAgentStrip(snapshots, theme, width) }), { placement: "belowEditor" });
     } else {
       // The compact rows keep every batch on one line; expanding is a `/agents` affordance.
-      const rows = buildTree({ agents: agentSnapshots(state, sessionIndex()), main: mainSnapshot(ctx), now: Date.now() });
+      const rows = buildTree({ agents: snapshots, main: mainSnapshot(ctx), now: Date.now() });
       ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, (_tui, theme) => ({ invalidate() { /* rows are rebuilt per tick */ }, render: (width) => renderAgentRows(rows, theme, width) }), { placement: "belowEditor" });
     }
     // Result entries are recorded for every run, including ones already gone from the rows.
     for (const agent of agents) {
+      // One toast per failure: the marker is persisted, so a reload never repeats it.
+      if (agent.status === "error" && !agent.notified && !notifiedFailures.has(agent.id)) {
+        notifiedFailures.add(agent.id);
+        ctx.ui.notify(`Fabric ${clean(agent.label, 60)} failed: ${clean(agent.error ?? "no reason recorded", 160).split("\n")[0]}`, "error");
+        try {
+          withLock(rootId, () => {
+            const next = loadState(rootId);
+            const stored = next.agents[agent.id];
+            if (stored && !stored.notified) { stored.notified = true; saveState(rootId, next); }
+          });
+        } catch (error) {
+          // A busy or removed root must not break the refresh tick. The in-memory set
+          // above already keeps this session to one toast per failure.
+          const reason = error instanceof Error ? error.message : String(error);
+          if (process.env.PI_FABRIC_DEBUG) process.stderr.write(`fabric: could not mark ${agent.id} notified: ${reason}\n`);
+        }
+      }
       if (!terminal(agent.status) || recorded.has(agent.id)) continue;
       recorded.add(agent.id);
       pi.appendEntry("pi-fabric-result", { rootId, agents: views([agent]), agentId: agent.id });
@@ -700,7 +989,11 @@ export default function piFabric(pi: ExtensionAPI) {
     if (!rootId) return;
     updateAgents(ctx); startRefresh(ctx);
   });
-  pi.on("session_shutdown", () => { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = undefined; });
+  pi.on("session_shutdown", () => {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = undefined;
+    usageCache.clear();
+  });
 
   function activity(kind: "activity" | "finding" | "tool" | "error", text: string) {
     const id = activeAgentId();
@@ -838,9 +1131,9 @@ export default function piFabric(pi: ExtensionAPI) {
       const root = ensureRoot(ctx); const state = loadState(root);
       const selected = params.agentIds ? params.agentIds.map((id) => state.agents[id]).filter((agent): agent is FabricAgent => Boolean(agent)) : Object.values(state.agents);
       const body = params.includeResults ? selected.map((agent) => `## ${agent.label} — ${agent.status}\n${resultText(agent)}`).join("\n\n") : [summary(state), ...treeLines(state, undefined)].join("\n");
-      // The idle sweep only hides agents from the UI; forensics stay complete here.
+      // The sweep only hides agents from the UI: done runs go when idle, failed ones after being opened.
       const gone = Object.values(state.agents).filter((agent) => isGone(agent)).length;
-      const note = gone ? `\n\n${gone} agent(s) are gone from the rows and /agents (idle more than ${IDLE_GONE_MS / 60_000} minutes). They stay listed here and their transcripts stay on disk.` : "";
+      const note = gone ? `\n\n${gone} agent(s) are gone from the rows and /agents (done runs idle more than ${IDLE_GONE_MS / 60_000} minutes, failed runs after being opened). They stay listed here and their transcripts stay on disk.` : "";
       return { content: [{ type: "text", text: (body || "Fabric has no delegated agents yet.") + note }], details: { rootId: root, agents: selected } };
     },
   });
@@ -856,12 +1149,46 @@ export default function piFabric(pi: ExtensionAPI) {
 
   pi.registerCommand("agents", {
     description: "List the main agent and every delegated run; open one as a full-window transcript",
-    handler: async (_args, ctx) => {
+    handler: async (args, ctx) => {
       if (!rootId || !existsSync(statePath(rootId))) {
         ctx.ui.notify("Pi Fabric has no agents in this session yet.", "info");
         return;
       }
-      await showAgents(ctx);
+      const query = (args ?? "").trim();
+      if (!query) { await showAgents(ctx); return; }
+      // `/agents 3` opens the third row without the list; a fragment opens one run by name.
+      if (/^\d+$/.test(query)) {
+        const rows = treeRows(ctx);
+        const index = Number(query);
+        const row = rows[index - 1];
+        if (!row) { ctx.ui.notify(`No agent ${index}; rows are numbered 1-${rows.length}.`, "warning"); return; }
+        await openRow(ctx, row);
+        return;
+      }
+      let state: FabricState;
+      try { state = loadState(rootId); } catch { ctx.ui.notify("Pi Fabric state is unavailable.", "error"); return; }
+      const match = matchAgent(liveAgents(Object.values(state.agents)), query);
+      if (!match) {
+        const labels = liveAgents(Object.values(state.agents)).map((agent) => agent.label).slice(0, 5).join(", ");
+        ctx.ui.notify(`No live agent matches "${query}".${labels ? ` Try: ${labels}` : ""}`, "warning");
+        return;
+      }
+      await showTranscript(ctx, [match.id]);
     },
   });
+
+  // The peek spike registers nothing unless the config opts in, so it cannot eat a
+  // keybinding the human relies on.
+  if (configResolution.config.peekPanel) {
+    pi.registerShortcut(Key.ctrlAlt("f"), { description: "Peek at a live Fabric agent's tail", handler: (ctx) => showPeek(ctx) });
+  }
+
+  // Alt+1..9 is a convenience on top of `/agents <n>`; it yields to any keybinding
+  // that already claims those keys, and to `PI_FABRIC_ALT_JUMP=0`.
+  if (altJumpAllowed() && typeof pi.registerShortcut === "function") {
+    for (const digit of ALT_DIGITS) {
+      const index = Number(digit);
+      pi.registerShortcut(Key.alt(digit), { description: `Open Fabric row ${index}`, handler: (ctx) => openRowNumber(ctx, index) });
+    }
+  }
 }

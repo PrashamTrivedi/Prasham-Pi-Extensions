@@ -13,6 +13,8 @@ When no model hierarchy is configured, a worker may spawn only the exact current
 
 An explicit missing file, invalid JSON, or invalid configuration fails clearly rather than silently changing policy. User config should live outside the installed package. Config is read when the extension loads. A root keeps the policy it was created with, but a reload re-applies the resolved config to the existing root, so a hierarchy edit takes effect on the next spawn without starting a new session.
 
+`peekPanel` (default `false`) adds the peek spike: a right-docked, non-capturing panel showing one live run's tail while typing continues in the main chat. `ctrl+alt+f` toggles it (the same key closes it), and it follows the working run, then a waiting one, then the newest failure. It is off until it has been judged in a real terminal; enable it and `/reload` to try it. When it is off, the shortcut is not registered at all.
+
 The [example configuration](../examples/fabric.config.json) uses placeholder model IDs. Replace them with IDs available in your Pi installation (`pi --list-models`). The aliases are yours to choose. A model's numerical rank determines which models it can delegate to; larger ranks may delegate to equal or smaller ranks. The current root model does not have to appear in the hierarchy: models you do not name are unrestricted — they can be spawned from any caller and can delegate to any model. Naming a model is what puts it in the ordered hierarchy.
 
 Example order:
@@ -43,19 +45,37 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
 
 - **Agent rows below the prompt** are the always-on surface. They appear the moment a child spawns
   (main first, children indented, groups marked) and disappear when the main chat is alone. Each row
-  is one bounded line: status icon, the agent's color, name, model, current activity, elapsed time.
+  is one bounded line: its number, status icon, the agent's color, name, model, current activity, and
+  elapsed time. A group row counts every member (`2● 1×`), so a failure cannot hide behind a running
+  sibling. Past three live agents the tree collapses to `◆ fabric 3● 1◌ 2✓ 1× · /agents`, and each
+  failed run keeps its own line.
 - **`/agents`** is the only keyboard path to a transcript: a tree of main plus every live agent with
-  expand/collapse, group rows, `x` to cancel (inline `y/n`), and `Esc` back to the chat.
+  expand/collapse, group rows, `x` to cancel (inline `y/n`), and `Esc` back to the chat. Rows carry
+  the same numbers, so `/agents 3` opens the third row without the list and `/agents api` opens the
+  run whose label or id matches (`api` exact, then prefix, then substring). `Alt+1`..`Alt+9` are the
+  same jump from the editor; they register only when `<agent-dir>/keybindings.json` claims none of
+  those keys, and `PI_FABRIC_ALT_JUMP=0` turns them off.
 - **Opening an agent takes the whole window** (a custom screen, not an overlay): a hue-tinted header,
   a rule, and tinted message-header bands, then the replayed session. `Esc` steps back to `/agents`,
   then to the chat. The main chat opens the same way from the live session file.
+- **Transcripts follow the run.** A pane opens at the end and stays pinned to the newest lines while
+  new bytes arrive. Scrolling up pauses it and the header counts what arrived meanwhile (`+2 new`);
+  `f` or `End` resumes, and scrolling back to the bottom resumes by itself. A session file over 4 MB
+  replays its tail (with a header note) instead of its head, and keeps following from there.
+- **`o` and `y`** in a transcript write `outputs/<id>.transcript.md` and open it in `zed`
+  (`PI_FABRIC_EDITOR` overrides; a missing editor is reported instead of failing silently), or copy
+  the raw session JSONL path to the clipboard.
 - **Comparison groups** (one `spawn_agents` call) open as two columns; `s` toggles one/two, `tab`
   switches focus, and each column keeps its own scroll position.
+- **Result cards are one line per run by default** (`✓ api · qwen · first finding`); `ctrl+o` expands
+  them to the comparison cards. A single result is one full-width card, never a placeholder.
 - **Colors** are generated per agent from its id (theme-tuned for dark and light), so an agent keeps
   its color across sessions and siblings stay distinguishable.
-- **Idle sweep:** an agent that is done, failed, or cancelled and stays idle for ten minutes leaves
-  the rows and `/agents`. Pruning is display-only: `state.json`, result cards, `agent_status`, and
-  every file on disk keep working.
+- **Idle sweep:** a done or cancelled agent that stays idle for ten minutes leaves the rows and
+  `/agents`. A failed run stays until its transcript is opened, so a failure inside a finished batch
+  is still visible, and each failure toasts exactly once (the marker is persisted, so a reload does
+  not repeat it). Pruning is display-only: `state.json`, result cards, `agent_status`, and every file
+  on disk keep working.
 - Result previews and transcript blocks are bounded; the saved session file keeps the rest.
 - `/team` and `/transcript` no longer exist; their jobs are the rows, `/agents`, and the transcript
   screen.

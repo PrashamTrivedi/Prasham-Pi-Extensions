@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { assignHues, buildTree, formatElapsed, hueOf, paintAgent, renderAgentRows, type AgentSnapshot } from "../../extensions/fabric/agents.ts";
+import { assignHues, buildTree, formatElapsed, groupCounts, hueOf, paintAgent, renderAgentRows, renderAgentStrip, COMPACT_AGENT_ROWS, type AgentSnapshot } from "../../extensions/fabric/agents.ts";
 import type { FabricTheme } from "../../extensions/fabric/ui.ts";
 
 const theme: FabricTheme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
@@ -44,6 +44,9 @@ test("the tree lists main first, then spawn order, indentig grandchildren", () =
     now: Date.parse("2026-01-01T00:10:00.000Z"),
   });
   expect(rows.map((row) => [row.id, row.depth])).toEqual([["main", 0], ["api", 1], ["helper", 2], ["tests", 1]]);
+  // Numbers follow the visible order so `/agents 3` (or Alt+3) means something concrete.
+  expect(rows.map((row) => row.number)).toEqual([1, 2, 3, 4]);
+  expect(renderAgentRows(rows, theme, 120)[3]).toContain("4.");
   expect(rows[0]!.kind).toBe("main");
   expect(rows[0]!.label).toBe("main");
 });
@@ -79,6 +82,23 @@ test("one spawn call with several agents becomes a single group row that opens s
   ]);
 });
 
+test("a group row counts every status, so a failure among running siblings stays visible", () => {
+ const agents = [
+  agent("api", { batchId: "call-1" }),
+  agent("tests", { batchId: "call-1" }),
+  agent("flaky", { batchId: "call-1", status: "error", activity: "Tests failed" }),
+ ];
+ const rows = buildTree({ main, agents });
+ const group = rows[1]!;
+ // One icon would say only "running"; counts keep the failure on the same line.
+ expect(group.status).toBe("running");
+ expect(group.counts).toBe("2● 1×");
+ const line = renderAgentRows(rows, theme, 120)[1]!;
+ expect(line).toContain("2● 1×");
+ expect(groupCounts([agent("a", { batchId: "b", status: "done" }), agent("b", { status: "done", batchId: "b" })])).toBe("2✓");
+ expect(groupCounts([agent("a", { status: "cancelled" }), agent("b", { status: "error" })])).toBe("2×");
+});
+
 test("collapsing a parent or a group hides its descendants and says how many", () => {
   const agents = [agent("api", { batchId: "call-1" }), agent("tests", { batchId: "call-1" }), agent("helper", { parentId: "api", batchId: "call-2" })];
   const groupCollapsed = buildTree({ main, agents });
@@ -100,6 +120,35 @@ test("a quiet main agent and a finished child report elapsed time honestly", () 
   });
   expect(rows[0]).toMatchObject({ status: "running", activity: "thinking", elapsedMs: 12 * 60_000 });
   expect(rows[1]).toMatchObject({ status: "done", elapsedMs: 2 * 60_000 });
+});
+
+test("more than three live agents collapse to one strip, and a failure keeps its own line", () => {
+  expect(COMPACT_AGENT_ROWS).toBe(3);
+  const agents = [
+    agent("run", { status: "running" }),
+    agent("wait", { status: "waiting" }),
+    agent("done", { status: "done" }),
+    agent("bad", { status: "error", activity: "exit 2: tests failed" }),
+  ];
+  const lines = renderAgentStrip(agents, theme, 120);
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toBe("◆ fabric 1● 1◌ 1✓ 1× · /agents");
+  // The summary keeps the count, and the failed run is still named with its reason.
+  expect(lines[1]).toContain("bad");
+  expect(lines[1]).toContain("exit 2: tests failed");
+  expect(renderAgentStrip(agents.filter((item) => item.status !== "error"), theme, 120)).toHaveLength(1);
+  for (const line of renderAgentStrip(agents, theme, 40)) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+});
+
+test("a wide row carries the folded usage, a narrow one drops it first", () => {
+  const rows = buildTree({ main, agents: [agent("api", { usage: "$0.04 · 12k · read", activity: "Running tests" })] });
+  const wide = renderAgentRows(rows, theme, 120)[1]!;
+  expect(wide).toContain("$0.04 · 12k · read");
+  expect(wide).toContain("Running tests");
+  const narrow = renderAgentRows(rows, theme, 80)[1]!;
+  expect(narrow).not.toContain("$0.04");
+  expect(narrow).toContain("Running tests");
+  for (const line of renderAgentRows(rows, theme, 40)) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 });
 
 test("rows are one line each, never wrap, and cap with a count", () => {

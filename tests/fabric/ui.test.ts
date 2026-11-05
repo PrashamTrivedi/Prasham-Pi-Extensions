@@ -75,6 +75,69 @@ const spec = (id: string, overrides: Partial<TranscriptPaneSpec> = {}): Transcri
  id, label: id, model: "qwen", status: "done", hue: 0.3, ...overrides,
 });
 
+test("a single result is one full-width card, never an Evidence placeholder", () => {
+ const single = renderComparisonResultCard({ title: "Result", left: { label: "api", status: "success", summary: "Done." } }, theme, 60);
+ expect(single.join("\n")).toContain("api");
+ expect(single.join("\n")).not.toContain("Evidence");
+ // The card spans the whole width instead of half of it.
+ expect(visibleWidth(single[1]!)).toBe(60);
+ const pair = renderComparisonResultCard({ left: { label: "a", summary: "one" }, right: { label: "b", summary: "two" } }, theme, 60);
+ expect(pair.join("\n")).toContain("b");
+});
+
+test("a pane opens at the end, follows live lines, and pauses with a +N new tag", () => {
+ const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: sessionText }) }) });
+ const first = pane.render(80, 12).join("\n");
+ // Opening at the end means the newest blocks are on screen without scrolling.
+ expect(pane.getState().following).toBe(true);
+ expect(pane.getState().offset).toBe(pane.getState().maxOffset);
+ expect(first).toContain("model → anthropic/claude-sonnet-4-5");
+ expect(first).not.toContain("Review the parser");
+ const second = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "second" }] } });
+ expect(pane.appendText(`${second}\n`)).toBe(true);
+ pane.render(80, 12);
+ expect(pane.getState().following).toBe(true);
+ expect(pane.getState().offset).toBe(pane.getState().maxOffset);
+ // Scrolling up pauses following and counts entries that arrive meanwhile.
+ pane.scroll("k");
+ expect(pane.getState().following).toBe(false);
+ const third = JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "third" }] } });
+ pane.appendText(`${third}\n`);
+ const paused = pane.render(80, 12).join("\n");
+ expect(paused).toContain("+1 new");
+ expect(pane.getState().pending).toBe(1);
+ // `f` resumes at the end and clears the tag.
+ pane.scroll("f");
+ expect(pane.getState().following).toBe(true);
+ expect(pane.getState().pending).toBe(0);
+ const resumed = pane.render(80, 12).join("\n");
+ expect(resumed).toContain("third");
+ expect(resumed).not.toContain("new");
+ // A replay error is explained on the header and never tails.
+ const failed = new TranscriptPane({ theme, spec: spec("broken", { read: () => ({ text: "", notice: "Unable to read /tmp/x", live: false }) }) });
+ expect(failed.render(80, 12)[0]).toContain("Unable to read");
+});
+
+test("appending a live run wraps only new entries instead of the whole transcript", () => {
+ const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: sessionText.repeat(2) }) }) });
+ pane.render(80, 12);
+ expect(pane.getState().rebuilds).toBe(1);
+ for (let index = 0; index < 3; index++) {
+  const line = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `chunk ${index} `.repeat(20) }] } });
+  pane.appendText(`${line}\n`);
+  pane.render(80, 12);
+ }
+ expect(pane.getState().rebuilds).toBe(1);
+ // A width change is the one case that re-wraps everything, once.
+ pane.render(100, 12);
+ expect(pane.getState().rebuilds).toBe(2);
+});
+
+test("a transcript header names the run's model, status and usage", () => {
+ const pane = new TranscriptPane({ theme, spec: spec("api", { usage: "$0.04 · 12k · read", read: () => ({ text: sessionText }) }) });
+ expect(pane.render(100, 12)[0]).toContain("qwen · done · $0.04 · 12k · read");
+});
+
 test("a pane replays a run and appends live lines without dropping a partial one", () => {
  const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: sessionText }) }) });
  expect(pane.getState().entries).toBe(6);
@@ -125,13 +188,17 @@ test("the transcript screen shows two columns, focuses them, and toggles to one"
  expect(wide.join("\n")).toContain("api");
  expect(wide.join("\n")).toContain("tests");
  overlay.handleInput("\t");
- expect(overlay.paneAt(1)?.getState().offset).toBe(0);
+ const secondPane = overlay.paneAt(1)!.getState().offset;
+ expect(secondPane).toBe(overlay.paneAt(1)!.getState().maxOffset);
+ // Both panes open at the end; `G` only moves the focused one.
+ const firstPane = overlay.paneAt(0)!.getState().offset;
  overlay.handleInput("G"); // scrolls only the focused pane
  expect(overlay.paneAt(1)!.getState().offset).toBeGreaterThan(0);
- expect(overlay.paneAt(0)!.getState().offset).toBe(0);
+ expect(overlay.paneAt(0)!.getState().offset).toBe(firstPane);
  overlay.handleInput("s"); // one column
  const single = overlay.render(120).join("\n");
  expect(single).toContain("pgup/pgdn scroll");
+ expect(single).toContain("f follow");
  expect(single).not.toContain("│");
  overlay.handleInput("\u001b");
  expect(closed).toBe(1);
@@ -141,6 +208,113 @@ test("the transcript screen shows two columns, focuses them, and toggles to one"
  const narrowText = narrow.render(60).join("\n");
  expect(narrowText).toContain("one column: too narrow for two");
  for (const line of narrow.render(60)) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+});
+
+test("a run exports as Markdown and o/y hand the focused pane to the caller", () => {
+ const left = spec("api", { hue: 0.3, read: () => ({ text: sessionText }) });
+ const right = spec("tests", { hue: 0.7, read: () => ({ text: sessionText }) });
+ const overlay = new AgentTranscriptOverlay({ theme, specs: [left, right] });
+ overlay.setHeight(20);
+ const opened: string[] = [];
+ const copied: string[] = [];
+ const second = new AgentTranscriptOverlay({
+  theme, specs: [left, right],
+  onOpen: (pane) => opened.push(pane.id),
+  onCopy: (pane) => copied.push(pane.id),
+ });
+ second.setHeight(20);
+ // `o` exports the run the pane is showing, not whatever is on screen.
+ const markdown = second.paneAt(0)!.markdown();
+ expect(markdown).toContain("# api");
+ expect(markdown).toContain("_qwen · done_");
+ expect(markdown).toContain("## Assistant");
+ expect(markdown).toContain("Reading the file now.");
+ expect(markdown).toContain("    {\"path\":\"/repo/a.ts\",\"limit\":20}");
+ expect(markdown).not.toContain("\u001b");
+ expect(markdown.endsWith("\n")).toBe(true);
+ // The second column is the one with focus after tab.
+ second.handleInput("\t");
+ second.handleInput("o");
+ second.handleInput("y");
+ expect(opened).toEqual(["tests"]);
+ expect(copied).toEqual(["tests"]);
+ expect(second.paneAt(1)!.path).toBeUndefined();
+ expect(second.render(120).join("\n")).toContain("o open · y path");
+});
+
+test("reading keys hide thinking, collapse results, find matches and jump to failures", () => {
+ const lines: string[] = [];
+ for (let index = 0; index < 30; index++) {
+  lines.push(JSON.stringify({ type: "message", message: { role: "assistant", content: [
+   ...(index === 4 ? [{ type: "thinking", thinking: "hidden thought" }] : []),
+   { type: "text", text: `answer ${index} needle` },
+  ] } }));
+ }
+ lines.push(JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "FAILED here\nline two\nline three" }] } }));
+ const longSession = `${lines.join("\n")}\n`;
+ const pane = new TranscriptPane({ theme, spec: spec("api", { read: () => ({ text: longSession }) }) });
+ pane.render(80, 40);
+ // Search is case-insensitive and ignores an empty query.
+ expect(pane.findMatches("needle")).toHaveLength(30);
+ expect(pane.findMatches("NEEDLE")).toHaveLength(30);
+ expect(pane.findMatches("")).toEqual([]);
+ expect(pane.findMatches("zzz")).toEqual([]);
+ // `e` has exactly the failed result to jump to.
+ expect(pane.errorLines()).toHaveLength(1);
+ pane.jumpToLine(pane.findMatches("needle")[10]!);
+ pane.render(80, 40);
+ expect(pane.getState().following).toBe(false);
+ expect(pane.getState().offset).toBeLessThanOrEqual(pane.findMatches("needle")[10]!);
+ // `t` hides thinking without losing it.
+ expect(pane.findMatches("hidden thought")).toHaveLength(1);
+ pane.toggleThinking();
+ expect(pane.findMatches("hidden thought")).toEqual([]);
+ expect(pane.markdown()).toContain("hidden thought");
+ pane.toggleThinking();
+ expect(pane.findMatches("hidden thought")).toHaveLength(1);
+ // `r` collapses a multi-line tool result to its first line plus a count.
+ pane.render(80, 40);
+ expect(pane.findMatches("line two")).toHaveLength(1);
+ pane.toggleResults();
+ expect(pane.findMatches("line two")).toEqual([]);
+ expect(pane.findMatches("(+2 lines)")).toHaveLength(1);
+ pane.toggleResults();
+ expect(pane.findMatches("line two")).toHaveLength(1);
+});
+
+test("the transcript screen searches incrementally and offers the reading keys", () => {
+ const lines = Array.from({ length: 40 }, (_, index) => JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `answer ${index} needle` }] } }));
+ const text = `${lines.join("\n")}\n`;
+ let closed = 0;
+ const overlay = new AgentTranscriptOverlay({ theme, specs: [spec("api", { read: () => ({ text }) })], onClose: () => closed++ });
+ overlay.setHeight(20);
+ const footer = () => overlay.render(100).at(-1)!;
+ expect(footer()).toContain("/ search");
+ // `/` starts an incremental search; every keystroke jumps to the first match.
+ overlay.handleInput("/");
+ overlay.handleInput("n");
+ overlay.handleInput("e");
+ expect(footer()).toContain("/ne");
+ expect(footer()).toContain("40 matches");
+ expect(overlay.paneAt(0)!.getState().following).toBe(false);
+ // Enter keeps the query so n/N can walk the matches.
+ overlay.handleInput("\r");
+ expect(footer()).toContain("n/N next");
+ const afterFirst = overlay.paneAt(0)!.getState().offset;
+ overlay.handleInput("n");
+ expect(overlay.paneAt(0)!.getState().offset).toBeGreaterThan(afterFirst);
+ overlay.handleInput("N");
+ expect(overlay.paneAt(0)!.getState().offset).toBeLessThanOrEqual(afterFirst);
+ // Esc clears the search first, and only then closes the screen.
+ overlay.handleInput("\u001b");
+ expect(closed).toBe(0);
+ expect(footer()).toContain("/ search");
+ overlay.handleInput("t");
+ expect(footer()).toContain("t thinking hidden");
+ overlay.handleInput("r");
+ expect(footer()).toContain("r results one line");
+ overlay.handleInput("\u001b");
+ expect(closed).toBe(1);
 });
 
 test("the agents screen selects, expands, confirms a cancel, and clamps when rows vanish", () => {

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildChildArgs, capturePatch, effectiveRule, isGone, liveAgents, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, IDLE_GONE_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { altJumpAllowed, altJumpConflicts, buildChildArgs, capturePatch, effectiveRule, isGone, liveAgents, matchAgent, onPath, openTranscriptInEditor, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, IDLE_GONE_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -95,7 +95,9 @@ test("an agent that stays idle ten minutes is gone, and only terminal agents can
   expect(IDLE_GONE_MS).toBe(10 * 60_000);
   expect(isGone({ status: "done", finishedAt: at(11) }, now)).toBe(true);
   expect(isGone({ status: "done", finishedAt: at(9) }, now)).toBe(false);
+  // A failure stays until its transcript is opened, however long ago it stopped.
   expect(isGone({ status: "error", finishedAt: at(10) }, now)).toBe(false);
+  expect(isGone({ status: "error", finishedAt: at(10), dismissed: true }, now)).toBe(true);
   expect(isGone({ status: "cancelled", finishedAt: at(30) }, now)).toBe(true);
   // Running, queued, waiting and freshly finished agents never disappear.
   expect(isGone({ status: "running", finishedAt: at(90) }, now)).toBe(false);
@@ -111,19 +113,85 @@ test("an agent that stays idle ten minutes is gone, and only terminal agents can
   expect(agents).toHaveLength(3);
 });
 
-test("transcript reads are bounded and explain truncation or failure", () => {
+test("transcript reads replay whole lines, keep the tail when capped, and resume tailing", () => {
   const dir = temp();
   const small = join(dir, "small.jsonl");
   writeFileSync(small, "{\"type\":\"session\"}\n");
-  expect(readTranscript(small)).toEqual({ text: "{\"type\":\"session\"}\n" });
+  const complete = readTranscript(small);
+  expect(complete.text).toBe("{\"type\":\"session\"}\n");
+  expect(complete.live).toBe(true);
+  expect(complete.offset).toBe(Buffer.byteLength(complete.text));
+  // A half-written trailing line is not replayed, and the cursor stays at its start.
+  writeFileSync(small, "{\"type\":\"session\"}\n{\"half\":1");
+  const half = readTranscript(small);
+  expect(half.text).toBe("{\"type\":\"session\"}\n");
+  expect(half.offset).toBe(Buffer.byteLength(half.text));
+  // Above the cap the head is dropped (not the tail), on a whole-line boundary.
   const large = join(dir, "large.jsonl");
-  writeFileSync(large, "x".repeat(50));
-  const truncated = readTranscript(large, 10);
-  expect(truncated.text).toHaveLength(10);
-  expect(truncated.notice).toContain("truncated");
+  const lines = ["a", "b", "c"].map((text) => `{"t":"${text.repeat(10)}"}\n`).join("");
+  writeFileSync(large, lines);
+  const tailed = readTranscript(large, 45);
+  expect(tailed.text).toBe(`{"t":"${"b".repeat(10)}"}\n{"t":"${"c".repeat(10)}"}\n`);
+  expect(tailed.notice).toContain("Showing the last");
+  expect(tailed.live).toBe(true);
+  expect(tailed.offset).toBe(Buffer.byteLength(lines));
   const missing = readTranscript(join(dir, "missing.jsonl"));
   expect(missing.text).toBe("");
   expect(missing.notice).toContain("Unable to read");
+  expect(missing.live).toBe(false);
+});
+
+test("a transcript opens in the editor only when the command is on PATH", () => {
+  const dir = temp();
+  const empty = { PATH: join(dir, "empty") };
+  expect(onPath("zed", empty)).toBe(false);
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const tool = join(bin, "zed");
+  writeFileSync(tool, "#!/bin/sh\n", { mode: 0o755 });
+  expect(onPath("zed", { PATH: bin })).toBe(true);
+  expect(onPath(tool, empty)).toBe(true);
+  expect(onPath(join(bin, "missing"), empty)).toBe(false);
+
+  const out = join(dir, "outputs");
+  const missing = openTranscriptInEditor({ dir: out, id: "agent-1", markdown: "# run\n" }, { PATH: bin, PI_FABRIC_EDITOR: "absent-editor" });
+  expect(readFileSync(join(out, "agent-1.transcript.md"), "utf8")).toBe("# run\n");
+  expect(missing).toContain("agent-1.transcript.md");
+  expect(missing).toContain("not on PATH");
+});
+
+test("an agent fragment resolves by exact label, prefix, then substring", () => {
+  const agents = [
+    { id: "a1", label: "api-refactor" },
+    { id: "a2", label: "rapid-check" },
+    { id: "a3", label: "Salvage" },
+  ];
+  expect(matchAgent(agents, "api")?.id).toBe("a1");
+  expect(matchAgent(agents, "API-REFACTOR")?.id).toBe("a1");
+  expect(matchAgent(agents, "a2")?.id).toBe("a2");
+  expect(matchAgent(agents, "pid")?.id).toBe("a2");   // substring beats nothing, prefix beats substring
+  expect(matchAgent(agents, "salvage")?.id).toBe("a3");
+  expect(matchAgent(agents, "")).toBeUndefined();
+  expect(matchAgent(agents, "zzz")).toBeUndefined();
+});
+
+test("Alt+1..9 registers only when no keybinding claims those keys", () => {
+  const dir = temp();
+  const home = join(dir, "home");
+  const agentDir = join(dir, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  expect(altJumpAllowed({}, home)).toBe(true);
+  expect(altJumpAllowed({ PI_FABRIC_ALT_JUMP: "0" }, home)).toBe(false);
+  expect(altJumpConflicts(["alt+1", "alt+2"], { a: "alt+9", b: ["alt+2", "ctrl+shift+n"] })).toEqual(["alt+2"]);
+  expect(altJumpConflicts(["alt+1"], "not an object")).toEqual([]);
+  const keybindings = join(agentDir, "keybindings.json");
+  writeFileSync(keybindings, JSON.stringify({ "app.session.new": ["alt+1", "ctrl+shift+n"] }));
+  expect(altJumpAllowed({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(false);
+  writeFileSync(keybindings, JSON.stringify({ "app.session.new": "alt+left" }));
+  expect(altJumpAllowed({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(true);
+  // A broken keybindings file cannot prove the keys are free, so the feature stays off.
+  writeFileSync(keybindings, "{oops");
+  expect(altJumpAllowed({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(false);
 });
 
 test("patch capture includes committed and untracked changes without changing the worker index", () => {

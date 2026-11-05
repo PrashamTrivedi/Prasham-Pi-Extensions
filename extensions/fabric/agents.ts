@@ -23,6 +23,10 @@ export interface AgentSnapshot {
   /** Agents created by one spawn call share this, so they compare as a group. */
   batchId?: string;
   sessionPath?: string;
+  /** A failed run the human has already opened; it leaves the rows from then on. */
+  dismissed?: boolean;
+  /** Folded usage (`$0.04 · 128k · read`) from the child session. */
+  usage?: string;
 }
 
 export interface AgentRow {
@@ -39,8 +43,14 @@ export interface AgentRow {
   depth: number;
   /** Stable 0..1 hue, assigned across everything currently visible. */
   hue: number;
+  /** 1-based position in the row list; `/agents <n>` and Alt+<n> target it. */
+  number?: number;
   /** Group rows only: the members that open side by side. */
   members?: string[];
+  /** Group rows only: per-status counts like `2● 1×`, so one icon cannot hide a failure. */
+  counts?: string;
+  /** Folded session usage, shown on wide rows only. */
+  usage?: string;
   /** True when this row hides descendants (agent or group). */
   collapsed?: boolean;
   /** Number of direct children hidden under a collapsed row. */
@@ -157,6 +167,51 @@ function groupStatus(members: readonly AgentSnapshot[]): AgentRowStatus {
 }
 
 /**
+ * A group row has one icon, so a failure among running siblings would disappear.
+ * Counts keep every status visible: `2● 1×`.
+ */
+export function groupCounts(members: readonly AgentSnapshot[]): string {
+  return statusCounts(members);
+}
+
+/** `3● 1◌ 2✓ 1×`: the per-status tally shared by group rows and the compact strip. */
+export function statusCounts(agents: readonly AgentSnapshot[]): string {
+  const count = (statuses: readonly AgentRowStatus[]): number =>
+    agents.filter((agent) => statuses.includes(agent.status)).length;
+  return ([
+    ["●", count(["running"])],
+    ["◌", count(["waiting"])],
+    ["○", count(["queued"])],
+    ["✓", count(["done"])],
+    ["×", count(["error", "cancelled"])],
+  ] as const)
+    .filter(([, value]) => value > 0)
+    .map(([icon, value]) => `${value}${icon}`)
+    .join(" ");
+}
+
+/** Above this many live agents the rows collapse to one strip plus one line per failure. */
+export const COMPACT_AGENT_ROWS = 3;
+
+/**
+ * The one-line replacement for a busy tree: `◆ fabric 3● 1◌ 2✓ 1× · /agents`.
+ * A failure never hides behind the summary, so each failed run keeps its own line.
+ */
+export function renderAgentStrip(agents: readonly AgentSnapshot[], theme: FabricTheme, width: number): string[] {
+  const counts = statusCounts(agents);
+  const line = `${theme.fg("accent", theme.bold("◆ fabric"))}${counts ? ` ${theme.fg("muted", counts)}` : ""}${theme.fg("dim", " · /agents")}`;
+  const failures = agents.filter((agent) => agent.status === "error");
+  const hues = assignHues(failures.map((agent) => agent.id));
+  return [
+    truncateToWidth(line, width),
+    ...failures.map((agent) => truncateToWidth(
+      `  ${theme.fg("error", "×")} ${paintAgent(theme, hues.get(agent.id) ?? 0, agent.label)} ${theme.fg("muted", `· ${agent.activity ?? "failed"}`)}`,
+      width,
+    )),
+  ];
+}
+
+/**
  * Flattens the agent tree into display rows: main first, then spawn order, with
  * descendants indented and multi-agent spawn batches collapsed into group rows.
  * Collapsing a parent (or a group) hides what is underneath it.
@@ -178,6 +233,7 @@ export function buildTree(input: TreeInput): AgentRow[] {
     model: agent.model,
     status: agent.status,
     activity: agent.activity,
+    usage: agent.usage,
     elapsedMs: elapsedFor(agent, now),
     sessionPath: agent.sessionPath,
     parentId: agent.parentId,
@@ -212,6 +268,7 @@ export function buildTree(input: TreeInput): AgentRow[] {
           depth,
           hue: hues.get(members[0]!.id) ?? 0,
           members: members.map((member) => member.id),
+          counts: groupCounts(members),
           collapsed: isCollapsed,
           hiddenChildren: isCollapsed ? members.length : undefined,
         });
@@ -233,6 +290,8 @@ export function buildTree(input: TreeInput): AgentRow[] {
 
   // Direct children of main are parentId-less; they start one level under the main row.
   visit(undefined, input.main ? 1 : 0);
+  // Numbers follow the visible order, so a person can type `/agents 3` for the third row.
+  rows.forEach((row, index) => { row.number = index + 1; });
   return rows;
 }
 
@@ -247,14 +306,17 @@ export function renderAgentRow(row: AgentRow, theme: FabricTheme, width: number,
   const name = row.kind === "main" ? theme.fg("accent", theme.bold("main")) : paintAgent(theme, row.hue, row.label);
   // A collapsed row says what it is hiding, so nothing disappears silently.
   const collapsedHint = row.collapsed && row.hiddenChildren ? `${row.hiddenChildren} hidden` : undefined;
-  const detail = (row.kind === "group" ? [row.activity, row.status] : [row.model, row.activity])
+  // Usage is the first thing to go when the row is narrow; it is the least urgent.
+  const usage = width >= 100 && row.kind !== "group" ? row.usage : undefined;
+  const detail = (row.kind === "group" ? [row.activity, row.counts ?? row.status] : [row.model, usage, row.activity])
     .concat(formatElapsed(row.elapsedMs), collapsedHint)
     .filter((part) => Boolean(part))
     .join(" · ");
   const branch = row.depth === 0 ? "" : `${"│  ".repeat(Math.max(0, row.depth - 1))}${options.last ? "└─" : "├─"} `;
   const cursor = options.cursor ? theme.fg("accent", "›") : "";
   const icon = theme.fg(row.kind === "main" ? "accent" : statusColor[row.status], marker);
-  return truncateToWidth(`${cursor}${theme.fg("dim", branch)}${icon} ${name} ${theme.fg("muted", `· ${detail}`)}`, width);
+  const number = row.number === undefined ? "" : theme.fg("dim", `${row.number}.`);
+  return truncateToWidth(`${cursor}${number ? `${number} ` : ""}${theme.fg("dim", branch)}${icon} ${name} ${theme.fg("muted", `· ${detail}`)}`, width);
 }
 
 /**
