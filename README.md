@@ -11,10 +11,16 @@ A Git-installable collection of [Pi](https://github.com/earendil-works/pi-mono) 
 ## Install from Git
 
 ```sh
+# Track main (every extension in this repository):
+pi install git:github.com/PrashamTrivedi/Prasham-Pi-Extensions
+
+# Or pin the published tag (currently v0.1.0, which predates most of the table below):
 pi install git:github.com/PrashamTrivedi/Prasham-Pi-Extensions@v0.1.0
 ```
 
-Run `/reload` inside an existing Pi session. Requires a recent Pi with the `@earendil-works` extension APIs; development targets **Pi 1.2.0** and Node **22.19+**. Fabric additionally requires Git, a repository with at least one commit, a `pi` executable on PATH, and authenticated model access. Shell-oriented context helpers are intended for macOS/Linux.
+Development itself loads this checkout by relative path, so edits are live without an install cycle: `.pi/settings.json` declares `{"packages": [".."]}`, and the agent settings point at this directory (`../../Code/Projects/Prasham-Pi-Extensions`). Use `/reload` after changing an extension.
+
+Run `/reload` inside an existing Pi session. Requires a recent Pi with the `@earendil-works` extension APIs; development targets **Pi 1.5.0** and Node **22.19+**. Fabric additionally requires Git, a repository with at least one commit, a `pi` executable on PATH, and authenticated model access. Shell-oriented context helpers are intended for macOS/Linux.
 
 Install for a project instead:
 
@@ -28,7 +34,7 @@ Use `pi config` to disable individual extensions. To install only Fabric, use th
 {
   "packages": [
     {
-      "source": "git:github.com/PrashamTrivedi/Prasham-Pi-Extensions@v0.1.0",
+      "source": "git:github.com/PrashamTrivedi/Prasham-Pi-Extensions",
       "extensions": ["extensions/fabric/index.ts"]
     }
   ]
@@ -45,10 +51,11 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | **BTW** | A main-chat-only side chat that answers from the current transcript and can stage a summary in the editor | `/btw`, `/btw send`, `PI_BTW_MODEL` |
 | **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
 | **Workbench** | Pet indicator with themed pixel badges and sign-off, two-line footer, and a cockpit docked above the editor with context, provider usage, recent decisions, and the shared HUD feed; deploy tracker and verdict toasts | `/cockpit`, `/hud`, `workbench.config.json` |
-| **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
+| **Duck** | A questions-only second opinion on the latest plan, asked through the shared structured-question tool | `duck` tool |
 | **Project context** | Adds the working directory, a bounded directory tree, and Git state (branch, remote, uncommitted files) to the system prompt | `PI_TREE_DEPTH`, `PI_TREE_MAX`, `PI_GIT_STATUS_MAX` |
 | **Recursive context** | Loads nested `AGENTS.md` / `CLAUDE.md` in trusted projects | `PI_RECURSIVE_CONTEXT_MAX`, `PI_RECURSIVE_CONTEXT_NAMES` |
 | **Memory** | Gives each project a local Markdown memory (`next_`, `project_`, `feedback_`, `reference_` notes plus an index) and injects the location and protocol so the model reads and writes it with normal file tools | `PI_MEMORY_ROOT` |
+| **Skills compact** | Rewrites the injected `<available_skills>` block each turn: one-line entries and a routing-capped description, so the list costs ~39% fewer tokens without dropping a skill | `/skills-compact`, `PI_SKILLS_COMPACT`, `PI_SKILLS_COMPACT_LIMIT` |
 | **Claude commands** | Registers `~/.claude/commands/**/*.md` as Pi slash commands (subfolders become `git:blame`-style namespaces; `$ARGUMENTS`, `$1`..`$9`) | `PI_CLAUDE_COMMANDS_DIR` |
 | **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data; renders only while a Workers AI model is active | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
@@ -58,7 +65,7 @@ The herdr-generated integration is intentionally not redistributed. Install herd
 
 ## Documentation
 
-One guide per extension: [fabric](docs/fabric.md) · [btw](docs/btw.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Claude commands](docs/claude-commands.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
+One guide per extension: [fabric](docs/fabric.md) · [btw](docs/btw.md) · [usage](docs/usage.md) · [workbench](docs/workbench.md) · [duck](docs/duck.md) · [project context](docs/project-context.md) · [recursive context](docs/recursive-context.md) · [memory](docs/memory.md) · [Claude commands](docs/claude-commands.md) · [Skills compact](docs/skills-compact.md) · [Cloudflare AI usage](docs/cloudflare-ai-usage.md) · [skill-name sanitizer](docs/sanitize-skill-names.md) · [sandbox-dev](docs/sandbox-dev.md). The shared library is documented in [docs/shared.md](docs/shared.md). Because `sandbox-dev` relays every tool call to the decision server, the runtime setup — enabled decisions, coverage map, probe recipe, measured costs, and known gaps — is recorded in [docs/decision-server.md](docs/decision-server.md).
 
 ## Fabric: delegate without losing the thread
 
@@ -238,7 +245,7 @@ Pinned tags do not automatically advance to newer releases. To upgrade, install 
 pi install git:github.com/PrashamTrivedi/Prasham-Pi-Extensions@NEW_VERSION
 ```
 
-For an unpinned development checkout, install without `@v0.1.0` and update with `pi update --extensions`. Git updates may reset and clean the package checkout—never store personal configuration there.
+For an unpinned development checkout, install without a tag and update with `pi update --extensions`. Git updates may reset and clean the package checkout—never store personal configuration there.
 
 ```sh
 pi remove git:github.com/PrashamTrivedi/Prasham-Pi-Extensions
