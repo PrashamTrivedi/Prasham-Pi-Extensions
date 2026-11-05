@@ -29,6 +29,7 @@
       "./extensions/recursive-context.ts",
       "./extensions/memory/index.ts",
       "./extensions/claude-commands/index.ts",
+      "./extensions/skills-compact.ts",
       "./extensions/cloudflare-ai-usage.ts",
       "./extensions/sanitize-skill-names.ts"
     ],
