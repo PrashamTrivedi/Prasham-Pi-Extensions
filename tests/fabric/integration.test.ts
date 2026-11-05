@@ -4,10 +4,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import fabric from "../../extensions/fabric/index.ts";
 import { peekHeight } from "../../extensions/fabric/peek.ts";
 
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text };
+// Pi's own message/tool components read the global theme.
+initTheme("dark", false);
 type Driver = (view: any, done: (value?: any) => void) => void;
 
 /**
@@ -142,6 +145,9 @@ test("/agents lists main and the child, opens the run full-window, and Esc steps
     host.drivers.push((view) => {
       // A full-window screen hides the rows widget so it cannot clip the screen's top.
       expect(host.widgets.get("pi-fabric-agents")).toBeUndefined();
+      // Viewport keys and the wheel belong to the screen, never to the chat behind it.
+      expect((view as any).capturesViewportInput).toBe(true);
+      expect(typeof (view as any).handleMouse).toBe("function");
       listText = view.render(100).join("\n");
       view.handleInput("j");     // main is first; select the child
       view.handleInput("\r");    // open it
@@ -166,8 +172,11 @@ test("/agents lists main and the child, opens the run full-window, and Esc steps
     expect(returnedToList).toBe(true);
     // The rows come back once the last screen closes.
     expect(host.widgets.get("pi-fabric-agents")).toBeDefined();
-    // Both screens are full-window custom screens, not overlays.
-    expect(host.overlays).toEqual([undefined, undefined, undefined]);
+    // The list is an inline full-window screen; the transcript is an opaque overlay
+    // covering the chat (only Pi's footer stays visible below it).
+    expect(host.overlays[0]).toBeUndefined();
+    expect(host.overlays[1]).toEqual({ overlay: true, overlayOptions: { width: "100%", margin: 0, anchor: "top-center" } });
+    expect(host.overlays[2]).toBeUndefined();
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 
@@ -239,7 +248,7 @@ test("/agents 2 and a name fragment open a run directly, and bad targets explain
   }
 });
 
-test("a spawn batch opens as two columns and a group member can be read alone with s", async () => {
+test("a spawn batch opens one agent at a time, full width, and tab shows the next", async () => {
   const rootId = randomUUID();
   const host = harness(rootId, {
     "alpha-1111": { id: "alpha-1111", label: "Alpha", model: "qwen", task: "t", status: "done", batchId: "call-1", finishedAt: new Date().toISOString(), sessionPath: join(tmpdir(), "pi-fabric", rootId, "sessions", "2026-01-01T00-00-00-000Z_alpha-1111.jsonl") },
@@ -251,30 +260,35 @@ test("a spawn batch opens as two columns and a group member can be read alone wi
     fabric(host.pi);
     host.events.get("session_start")!({}, host.ctx);
     let listText = "";
-    let splitText = "";
-    let singleText = "";
+    let firstText = "";
+    let secondText = "";
     host.drivers.push((view) => {
       // A full-window screen hides the rows widget so it cannot clip the screen's top.
       expect(host.widgets.get("pi-fabric-agents")).toBeUndefined();
+      // Viewport keys and the wheel belong to the screen, never to the chat behind it.
+      expect((view as any).capturesViewportInput).toBe(true);
+      expect(typeof (view as any).handleMouse).toBe("function");
       listText = view.render(100).join("\n");
       view.handleInput("j");   // the group row sits under main
       view.handleInput("\r");
     });
     host.drivers.push((view) => {
-      splitText = view.render(100).join("\n");
-      view.handleInput("s");   // one column
-      singleText = view.render(100).join("\n");
+      firstText = view.render(100).join("\n");
+      view.handleInput("\t");  // next member of the batch
+      secondText = view.render(100).join("\n");
       view.handleInput("\u001b");
     });
     host.drivers.push((_view, done) => done(undefined));
     await host.commands.get("agents").handler("", host.ctx);
 
     expect(listText).toContain("2 agents");
-    expect(splitText).toContain("Alpha finished first.");
-    expect(splitText).toContain("Beta finished second.");
-    expect(splitText).toContain("│");
-    expect(singleText).not.toContain("│");
-    expect(singleText).toContain("tab focus");
+    // One full-width column: only the focused member is on screen.
+    expect(firstText).toContain("Alpha finished first.");
+    expect(firstText).not.toContain("Beta finished second.");
+    expect(firstText).toContain("Alpha 1/2");
+    expect(firstText).not.toContain("│");
+    expect(secondText).toContain("Beta finished second.");
+    expect(secondText).toContain("Beta 2/2");
   } finally { host.events.get("session_shutdown")?.({}, host.ctx); host.cleanup(); }
 });
 

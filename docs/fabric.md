@@ -55,9 +55,16 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
   run whose label or id matches (`api` exact, then prefix, then substring). `Alt+1`..`Alt+9` are the
   same jump from the editor; they register only when `<agent-dir>/keybindings.json` claims none of
   those keys, and `PI_FABRIC_ALT_JUMP=0` turns them off.
-- **Opening an agent takes the whole window** (a custom screen, not an overlay): a hue-tinted header,
-  a rule, and tinted message-header bands, then the replayed session. `Esc` steps back to `/agents`,
-  then to the chat. The main chat opens the same way from the live session file.
+- **Opening an agent takes the whole window** (a custom screen, not an overlay) and renders with
+  Pi's own chat components: `UserMessageComponent`, `AssistantMessageComponent` and
+  `ToolExecutionComponent`, with the built-in tool renderers. Markdown, thinking runs, bash/read/edit
+  cards, collapsed read results and `ctrl+o` expansion match the window the run came from; the same
+  `outputPad` setting is read from the agent settings. Fabric adds one header line
+  (`◆ api · qwen · done · $0.04 · 12k · read`) and the footer keys. The screen is an opaque
+  full-width overlay: the chat is not visible behind it (only Pi's footer stays), and it owns the
+  mouse wheel and the paging keys, so scrolling moves the transcript rather than the chat.
+  `Esc` steps back to `/agents`, then to the chat. The main chat opens the same way from the live
+  session file.
 - **Transcripts follow the run.** A pane opens at the end and stays pinned to the newest lines while
   new bytes arrive. Scrolling up pauses it and the header counts what arrived meanwhile (`+2 new`);
   `f` or `End` resumes, and scrolling back to the bottom resumes by itself. A session file over 4 MB
@@ -65,8 +72,9 @@ The root never auto-applies a patch. Workers remain ordinary processes with file
 - **`o` and `y`** in a transcript write `outputs/<id>.transcript.md` and open it in `zed`
   (`PI_FABRIC_EDITOR` overrides; a missing editor is reported instead of failing silently), or copy
   the raw session JSONL path to the clipboard.
-- **Comparison groups** (one `spawn_agents` call) open as two columns; `s` toggles one/two, `tab`
-  switches focus, and each column keeps its own scroll position.
+- **Comparison groups** (one `spawn_agents` call) open one member at a time, full width; `tab`
+  switches members and each keeps its own scroll position and search. The `/agents` list also owns
+  the viewport keys and the wheel, so a long list scrolls instead of the chat.
 - **Result cards are one line per run by default** (`✓ api · qwen · first finding`); `ctrl+o` expands
   them to the comparison cards. A single result is one full-width card, never a placeholder.
 - **Colors** are generated per agent from its id (theme-tuned for dark and light), so an agent keeps

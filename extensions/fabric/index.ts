@@ -5,9 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { copyToClipboard } from "@earendil-works/pi-coding-agent";
-import { Key, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, Text, truncateToWidth, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { AgentTranscriptOverlay, AgentsScreen, renderComparisonResultCard, TranscriptPane, type FabricAgentView, type FabricTheme, type ComparisonResult, type TranscriptPaneSpec, type TranscriptSource } from "./ui.ts";
 import { PEEK_KEYS, PEEK_OVERLAY_OPTIONS, peekHeight, peekTarget, renderPeekPanel } from "./peek.ts";
 import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen, fitScreen, fullScreenOpen, windowHeight } from "../shared/full-screen.ts";
@@ -484,9 +484,21 @@ function resultText(agent: FabricAgent): string {
   return readFileSync(agent.resultPath, "utf8");
 }
 
+/** Pi's chat padding, so the agent view matches the window it came from. */
+export function readChatPad(env: NodeJS.ProcessEnv = process.env, home = homedir()): number {
+  const dir = env.PI_CODING_AGENT_DIR ? resolve(env.PI_CODING_AGENT_DIR) : join(home, ".pi", "agent");
+  try {
+    const settings = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")) as { outputPad?: unknown };
+    const value = settings.outputPad;
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(4, Math.max(0, Math.round(value))) : 1;
+  } catch { return 1; }
+}
+
 export default function piFabric(pi: ExtensionAPI) {
   // Resolve once per process. An explicitly selected, unreadable, or malformed config is fatal instead of silently changing policy.
   const configResolution = resolveConfig();
+  /** Pi's chat padding; the transcript components use it so the view matches the chat. */
+  const chatPad = readChatPad();
   if (configResolution.source === "env" && configResolution.path) process.env.PI_FABRIC_CONFIG = configResolution.path;
   let rootId = process.env[ROOT_ENV] ?? "";
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -572,6 +584,23 @@ export default function piFabric(pi: ExtensionAPI) {
     return truncateToWidth(`${icon} ${theme.fg("accent", agent.label)} ${theme.fg("muted", `· ${agent.model} · ${summary}`)}${patch}`, width);
   }
 
+  /** The chat's own renderers for Fabric tools, reused by the agent transcript. */
+  function spawnCall(args: { agents?: unknown[] }, theme: FabricTheme): Text {
+    const count = args.agents?.length ?? 0;
+    return new Text(theme.fg("accent", `\u25c6 fabric spawn  ${count} agent${count === 1 ? "" : "s"}`), 0, 0);
+  }
+  function spawnResult(result: { details?: { agents?: FabricAgent[] } }, _options: { expanded?: boolean }, theme: FabricTheme): Text {
+    return new Text((result.details?.agents ?? []).map((agent) => `${theme.fg("warning", "\u25cb")} ${theme.fg("accent", agent.label)} ${theme.fg("dim", `${short(agent.id)} \u00b7 ${agent.model}`)}`).join("\n"), 0, 0);
+  }
+  function awaitResult(result: { details?: { ui?: FabricAgentView[]; agents?: FabricAgent[] } }, options: { expanded: boolean; isPartial?: boolean }, theme: FabricTheme) {
+    return comparison(result.details?.ui ?? result.details?.agents ?? [], theme, options.expanded,
+      options.isPartial ? "\u25c6 FABRIC \u00b7 Live comparison" : "\u25c6 FABRIC \u00b7 Results ready");
+  }
+  const toolRenderers: ReadonlyMap<string, ToolRenderers> = new Map<string, ToolRenderers>([
+    ["spawn_agents", { renderCall: spawnCall, renderResult: spawnResult } as unknown as ToolRenderers],
+    ["await_agents", { renderResult: awaitResult } as unknown as ToolRenderers],
+  ]);
+
   /** Session files by agent id, read once per call instead of once per agent. */
   function sessionIndex(): Map<string, string> {
     const index = new Map<string, string>();
@@ -638,7 +667,7 @@ export default function piFabric(pi: ExtensionAPI) {
   function paneSpec(ctx: ExtensionContext, id: string): TranscriptPaneSpec | undefined {
     if (id === "main") {
       const main = mainSnapshot(ctx);
-      return { id: "main", label: "main", model: main.model, status: main.status, hue: 0, main: true, read: undefined };
+      return { id: "main", label: "main", model: main.model, status: main.status, hue: 0, main: true, cwd: ctx.cwd, read: undefined };
     }
     if (!rootId || !existsSync(statePath(rootId))) return undefined;
     let agent: FabricAgent | undefined;
@@ -647,7 +676,7 @@ export default function piFabric(pi: ExtensionAPI) {
     const path = agent.sessionPath ?? resolveSessionFile(sessionsDir(rootId), id);
     const rows = treeRows(ctx);
     const hue = rows.find((row) => row.id === id)?.hue ?? 0;
-    return { id, label: clean(agent.label, 80), model: agent.model.split("/").pop() ?? agent.model, status: agent.status, hue, path, usage: formatUsage(agentUsage(agent)) || undefined };
+    return { id, label: clean(agent.label, 80), model: agent.model.split("/").pop() ?? agent.model, status: agent.status, hue, path, cwd: agent.worktree ?? agent.cwd, usage: formatUsage(agentUsage(agent)) || undefined };
   }
 
   /**
@@ -702,7 +731,7 @@ export default function piFabric(pi: ExtensionAPI) {
     try {
       await withScreen(ctx, () => ctx.ui.custom((tui, theme, _keys, done) => {
         const overlay = new AgentTranscriptOverlay({
-          theme, specs, onClose: () => done(undefined),
+          theme, specs, ui: tui, outputPad: chatPad, renderers: toolRenderers, onClose: () => done(undefined),
           onOpen: (pane) => {
             try {
               ctx.ui.notify(openTranscriptInEditor({ dir: outputDir(rootId), id: pane.id, markdown: pane.markdown() }), "info");
@@ -730,14 +759,21 @@ export default function piFabric(pi: ExtensionAPI) {
           } catch { /* Keep the last transcript that rendered. */ }
         }, 1000);
         return {
+          // The screen owns the viewport: paging keys go to the transcript, not the chat.
+          capturesViewportInput: true,
           invalidate: () => overlay.invalidate(),
           handleInput: (input: string) => overlay.handleInput(input),
+          handleMouse: (event: TuiMouseEvent) => overlay.handleMouse(event),
           render: (width: number) => {
             const height = windowHeight(tui.terminal.rows);
             overlay.setHeight(height);
             return fitScreen(overlay.render(width), height, width);
           },
         };
+      }, {
+        // Cover the chat completely: only Pi's footer stays visible below the screen.
+        overlay: true,
+        overlayOptions: { width: "100%", margin: 0, anchor: "top-center" },
       }));
     } finally { if (timer) clearInterval(timer); }
     if (hidden > 0) ctx.ui.notify(`${hidden} more agent(s) in this group; open them from /agents.`, "info");
@@ -787,7 +823,7 @@ export default function piFabric(pi: ExtensionAPI) {
     let timer: ReturnType<typeof setInterval> | undefined;
     try {
       await ctx.ui.custom((tui, theme, _keys, done) => {
-        const pane = new TranscriptPane({ theme, spec: { ...spec, path, read: () => initial } });
+        const pane = new TranscriptPane({ theme, spec: { ...spec, path, read: () => initial }, ui: tui, outputPad: chatPad, renderers: toolRenderers });
         peekClose = () => done(undefined);
         timer = setInterval(() => {
           try {
@@ -848,8 +884,10 @@ export default function piFabric(pi: ExtensionAPI) {
           });
           timer = setInterval(() => { try { screen.setRows(treeRows(ctx)); tui.requestRender(); } catch { /* Keep the last list. */ } }, 750);
           return {
+            capturesViewportInput: true,
             invalidate: () => screen.invalidate(),
             handleInput: (input: string) => screen.handleInput(input),
+            handleMouse: (event: TuiMouseEvent) => screen.handleMouse(event),
             render: (width: number) => {
               const height = windowHeight(tui.terminal.rows);
               screen.setHeight(height);
@@ -1091,8 +1129,8 @@ export default function piFabric(pi: ExtensionAPI) {
       updateAgents(ctx);
       return { content: [{ type: "text", text: `Queued ${created.length} Fabric agent(s): ${created.map((agent) => `${agent.label} [${short(agent.id)}]`).join(", ")}. Use await_agents when their evidence is needed.` }], details: { rootId: root, agents: created } };
     },
-    renderCall(args, theme) { return new Text(theme.fg("accent", `◆ fabric spawn  ${args.agents.length} agent${args.agents.length === 1 ? "" : "s"}`), 0, 0); },
-    renderResult(result, _options, theme) { const details = result.details as { agents?: FabricAgent[] }; return new Text((details.agents ?? []).map((agent) => `${theme.fg("warning", "○")} ${theme.fg("accent", agent.label)} ${theme.fg("dim", `${short(agent.id)} · ${agent.model}`)}`).join("\n"), 0, 0); },
+    renderCall: spawnCall,
+    renderResult: spawnResult,
   });
 
   pi.registerTool({
@@ -1118,11 +1156,7 @@ export default function piFabric(pi: ExtensionAPI) {
       }
       throw new Error("Waiting for Fabric agents was cancelled.");
     },
-    renderResult(result, options, theme) {
-      const details = result.details as { ui?: FabricAgentView[]; agents?: FabricAgent[] } | undefined;
-      return comparison(details?.ui ?? details?.agents ?? [], theme, options.expanded,
-        options.isPartial ? "◆ FABRIC · Live comparison" : "◆ FABRIC · Results ready");
-    },
+    renderResult: awaitResult,
   });
 
   pi.registerTool({

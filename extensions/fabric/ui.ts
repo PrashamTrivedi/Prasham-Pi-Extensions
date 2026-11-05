@@ -12,9 +12,14 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
+  type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
+import type { ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { clean } from "./activity.ts";
-import { agentBand, paintAgent, renderAgentRow, type AgentRow, type AgentRowStatus } from "./agents.ts";
+import { paintAgent, renderAgentRow, type AgentRow, type AgentRowStatus } from "./agents.ts";
+import { NativeTranscript } from "./native-transcript.ts";
 export type { AgentRow, AgentRowStatus } from "./agents.ts";
 
 export type FabricAgentStatus = "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
@@ -275,7 +280,7 @@ function describeEntry(entry: TranscriptEntry, theme: FabricTheme, band?: (text:
 
 /* ---------- transcript panes ---------- */
 
-/** What one column of the transcript screen needs to know about its agent. */
+/** What the transcript screen needs to know about its agent. */
 export interface TranscriptPaneSpec {
   id: string;
   label: string;
@@ -286,6 +291,8 @@ export interface TranscriptPaneSpec {
   main?: boolean;
   /** Saved session file this pane replays. */
   path?: string;
+  /** Working directory for tool renderers (the agent's worktree). */
+  cwd?: string;
   /** Folded usage (`$0.04 · 128k · read`) shown in the header. */
   usage?: string;
   /** Initial load; live updates arrive through the overlay's `appendText`. */
@@ -295,17 +302,17 @@ export interface TranscriptPaneSpec {
 export interface TranscriptPaneOptions {
   theme: FabricTheme;
   spec: TranscriptPaneSpec;
+  /** Pi's TUI: the real tool components render against it. */
+  ui: TUI;
+  /** Pi's chat padding (`outputPad` in the agent settings). Default: 1. */
+  outputPad?: number;
+  /** Fabric's own tool renderers, so child tool cards look like the chat's. */
+  renderers?: ReadonlyMap<string, ToolRenderers>;
   /** Body rows before `setHeight` is called. Default: 20. */
   maxRows?: number;
 }
 
-/**
- * One agent's conversation as a column: a hue-tinted header, a rule, and the
- * replayed session body. Parsing, incremental append, scrolling and width safety
- * live here; the overlay arranges one or two of these side by side.
- */
-/** Rendered lines per transcript block, wrapped for one width and appended incrementally. */
-/** Which blocks a reader wants to see; toggling either one re-wraps the body. */
+/** Which blocks a reader wants to see; toggling either one re-renders the body. */
 export interface TranscriptFilters {
   showThinking: boolean;
   collapseResults: boolean;
@@ -313,33 +320,24 @@ export interface TranscriptFilters {
 
 export const DEFAULT_TRANSCRIPT_FILTERS: TranscriptFilters = { showThinking: true, collapseResults: false };
 
-interface WrapBlock {
-  lines: string[];
-  /** A failed tool result: `e` jumps between these. */
-  error: boolean;
-}
-
-interface WrapCache {
-  width: number;
-  showThinking: boolean;
-  collapseResults: boolean;
-  /** Source entries already wrapped (thinking may be skipped, so this is not `blocks.length`). */
-  entries: number;
-  blocks: WrapBlock[];
-  /** `blocks` joined with a blank line between them. */
-  flat: string[];
-  /** Flat line index where each failed block starts. */
-  errors: number[];
-}
-
+/**
+ * One agent's conversation, rendered with Pi's own chat components (markdown,
+ * thinking runs, tool cards). Fabric adds a single header line, the follow/pause
+ * behaviour, search, the reading filters and the viewport; everything inside the
+ * transcript is Pi's rendering, so the agent view looks like the window it came from.
+ */
 export class TranscriptPane {
   private readonly theme: FabricTheme;
   private readonly spec: TranscriptPaneSpec;
+  private readonly ui: TUI;
+  private readonly outputPad: number;
+  private readonly renderers?: ReadonlyMap<string, ToolRenderers>;
   private source: TranscriptSource = { text: "" };
   private entries: TranscriptEntry[] = [];
+  /** Pi components for the same lines; built once, appended incrementally. */
+  private native?: NativeTranscript;
   /** Index in `source.text` after the last parsed complete line. */
   private parsedChars = 0;
-  private wrap?: WrapCache;
   private offset = 0;
   private maxOffset = 0;
   private maxRows: number;
@@ -347,8 +345,6 @@ export class TranscriptPane {
   private following = true;
   /** Entries that arrived while paused, counted for the header tag. */
   private pending = 0;
-  /** Full re-wraps (width or filters changed); appends reuse the cache, so this stays low. */
-  private rebuilds = 0;
   private filters: TranscriptFilters = { ...DEFAULT_TRANSCRIPT_FILTERS };
   /** Width of the last render, so search can lay the body out before painting it. */
   private lastWidth = 80;
@@ -356,31 +352,29 @@ export class TranscriptPane {
   constructor(options: TranscriptPaneOptions) {
     this.theme = options.theme;
     this.spec = options.spec;
+    this.ui = options.ui;
+    this.outputPad = options.outputPad ?? 1;
+    this.renderers = options.renderers;
     this.maxRows = Math.max(3, options.maxRows ?? 20);
     if (this.spec.read) this.setSource(this.spec.read());
-  }
-  private band(): ((text: string) => string) | undefined {
-    const band = this.theme.style ? agentBand(this.theme, this.spec.hue) : undefined;
-    return band && this.theme.style
-      ? (text: string) => this.theme.style!(text, { fg: band.fg, bg: band.bg })
-      : undefined;
   }
   get id(): string { return this.spec.id; }
   get label(): string { return this.spec.label; }
   get hue(): number { return this.spec.hue; }
+  get cwd(): string | undefined { return this.spec.cwd; }
   /** Saved session file this pane replays, if any. */
   get path(): string | undefined { return this.spec.path; }
   get filterState(): TranscriptFilters { return { ...this.filters }; }
   /** `t`: hide or show thinking blocks. Returns the new state. */
   toggleThinking(): boolean {
     this.filters = { ...this.filters, showThinking: !this.filters.showThinking };
-    this.wrap = undefined;
+    this.native?.setHideThinking(!this.filters.showThinking);
     return this.filters.showThinking;
   }
-  /** `r`: collapse each tool result to one line. Returns the new state. */
+  /** `r`: expand or collapse tool output (Pi's ctrl+o). Returns the new state. */
   toggleResults(): boolean {
     this.filters = { ...this.filters, collapseResults: !this.filters.collapseResults };
-    this.wrap = undefined;
+    this.native?.setExpanded(this.filters.collapseResults);
     return this.filters.collapseResults;
   }
   /** Flat body line indices whose text contains `query`, case-insensitively. */
@@ -394,7 +388,7 @@ export class TranscriptPane {
   /** Flat body line indices of failed tool results, for `e`. */
   errorLines(): number[] {
     this.bodyLines(this.lastWidth);
-    return [...(this.wrap?.errors ?? [])];
+    return this.native?.errorLines() ?? [];
   }
   /** Moves the view to a flat body line and pauses following. */
   jumpToLine(line: number): void {
@@ -405,16 +399,16 @@ export class TranscriptPane {
   markdown(): string {
     return transcriptMarkdown(this.spec.label, [this.spec.model, this.spec.status].filter(Boolean).join(" \u00b7 "), this.entries);
   }
-  invalidate(): void { this.wrap = undefined; }
-  /** Sizes the body so header + rule + body fills `height` lines exactly. */
-  setHeight(height: number): void { this.maxRows = Math.max(3, Math.floor(height) - 2); }
+  invalidate(): void { this.native?.invalidate(); }
+  /** Sizes the body so the header plus the body fills `height` lines exactly. */
+  setHeight(height: number): void { this.maxRows = Math.max(3, Math.floor(height) - 1); }
   setSource(source: TranscriptSource): void {
     this.source = source;
     // Only complete lines are parsed; a half-written trailing line waits for its newline.
     const lastNewline = source.text.lastIndexOf("\n");
     this.parsedChars = lastNewline + 1;
     this.entries = parseSessionText(source.text.slice(0, this.parsedChars));
-    this.wrap = undefined;
+    this.native = undefined;
     this.maxOffset = 0;
     // A transcript opens at the end: the newest lines are what the human came for.
     this.following = true;
@@ -427,12 +421,28 @@ export class TranscriptPane {
     this.source = { ...this.source, text: this.source.text + chunk };
     const end = this.source.text.lastIndexOf("\n");
     if (end < this.parsedChars) return false;
-    const fresh = this.source.text.slice(this.parsedChars, end).split("\n").flatMap(parseSessionLine);
+    const whole = this.source.text.slice(this.parsedChars, end + 1);
+    const fresh = whole.split("\n").slice(0, -1).flatMap(parseSessionLine);
     this.parsedChars = end + 1;
     if (!fresh.length) return false;
     this.entries = [...this.entries, ...fresh];
+    // Pi's components are appended, never rebuilt: the previous blocks stay untouched.
+    this.native?.apply(whole);
     if (!this.following) this.pending += fresh.length;
     return true;
+  }
+  /** Mouse wheel: scrolls by logical lines (negative is up) and pauses following. */
+  scrollBy(lines: number): boolean {
+    if (!lines) return false;
+    const before = this.resolvedOffset();
+    // While following, the view is pinned to the end; the wheel starts from there.
+    if (this.following) this.offset = this.maxOffset;
+    const next = Math.min(Math.max(0, this.offset + lines), this.maxOffset);
+    // Landing on the bottom resumes following, so a wheel down never hides new lines.
+    this.following = next >= this.maxOffset;
+    if (this.following) this.pending = 0;
+    this.offset = next;
+    return before !== this.resolvedOffset();
   }
   /** Handles the scroll keys; returns true when the view moved. */
   scroll(input: string): boolean {
@@ -456,6 +466,9 @@ export class TranscriptPane {
     let next = this.offset;
     if (matchesKey(input, Key.pageDown) || input === " " || input === "j") next += page;
     else if (matchesKey(input, Key.pageUp) || input === "k") next -= page;
+    // Pi's half-page keys keep working, because the screen now owns the viewport.
+    else if (matchesKey(input, Key.ctrl("d"))) next += Math.max(1, Math.floor(page / 2));
+    else if (matchesKey(input, Key.ctrl("u"))) next -= Math.max(1, Math.floor(page / 2));
     else if (matchesKey(input, Key.down)) next += 1;
     else if (matchesKey(input, Key.up)) next -= 1;
     else return false;
@@ -470,8 +483,32 @@ export class TranscriptPane {
   private resolvedOffset(): number {
     return this.following || this.offset === Number.MAX_SAFE_INTEGER ? this.maxOffset : this.offset;
   }
-  getState(): { offset: number; maxOffset: number; entries: number; rows: number; following: boolean; pending: number; rebuilds: number } {
-    return { offset: this.resolvedOffset(), maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows, following: this.following, pending: this.pending, rebuilds: this.rebuilds };
+  getState(): { offset: number; maxOffset: number; entries: number; rows: number; following: boolean; pending: number; blocks: number } {
+    return { offset: this.resolvedOffset(), maxOffset: this.maxOffset, entries: this.entries.length, rows: this.maxRows, following: this.following, pending: this.pending, blocks: this.native?.componentCount ?? 0 };
+  }
+  /** Header, body, padded to exactly `height` lines. */
+  render(width: number, height: number, focused = false): string[] {
+    if (width < 1) return [];
+    const rows = Math.max(1, height - 1);
+    const body = this.bodyLines(width);
+    const max = Math.max(0, body.length - rows);
+    this.maxOffset = max;
+    this.offset = this.following ? max : Math.min(Math.max(0, this.offset), max);
+    const name = this.spec.main ? this.theme.fg("accent", this.theme.bold(this.spec.label)) : paintAgent(this.theme, this.spec.hue, this.spec.label);
+    const meta = [this.spec.model, this.spec.status, this.spec.usage].filter(Boolean).join(" \u00b7 ");
+    // A read error or head trim is explained on the header; otherwise a paused
+    // view counts what arrived while the human was reading.
+    const tag = this.source.notice
+      ? this.theme.fg("dim", `\u00b7 ${this.source.notice}`)
+      : this.following ? undefined
+      : this.pending > 0 ? this.theme.fg("warning", `+${this.pending} new`) : this.theme.fg("warning", "paused");
+    const cursor = focused ? this.theme.fg("accent", "\u203a ") : "";
+    const header = truncateToWidth(`${cursor}${this.theme.fg("accent", "\u25c6")} ${name} ${this.theme.fg("muted", `\u00b7 ${meta}`)}${tag ? ` \u00b7 ${tag}` : ""}`, width);
+    const start = this.resolvedOffset();
+    const visible = body.slice(start, start + rows);
+    const lines = [header, ...visible];
+    while (lines.length < height) lines.push("");
+    return lines.slice(0, Math.max(1, height)).map((line) => truncateToWidth(line, width));
   }
   /** The visible body rows only, for a host that draws its own frame (the peek panel). */
   visibleRows(width: number, rows: number): string[] {
@@ -483,89 +520,33 @@ export class TranscriptPane {
     const start = this.resolvedOffset();
     return body.slice(start, start + Math.max(1, rows));
   }
-  /** Header, rule and body, padded to exactly `height` lines. */
-  render(width: number, height: number, focused = false): string[] {
-    if (width < 1) return [];
-    const rows = Math.max(1, height - 2);
-    const body = this.bodyLines(width);
-    this.lastWidth = width;
-    const max = Math.max(0, body.length - rows);
-    this.maxOffset = max;
-    this.offset = this.following ? max : Math.min(Math.max(0, this.offset), max);
-    const name = this.spec.main ? this.theme.fg("accent", this.theme.bold(this.spec.label)) : paintAgent(this.theme, this.spec.hue, this.spec.label);
-    const meta = [this.spec.model, this.spec.status, this.spec.usage].filter(Boolean).join(" · ");
-    // A read error or head trim is explained on the header; otherwise a paused
-    // view counts what arrived while the human was reading.
-    const tag = this.source.notice
-      ? this.theme.fg("dim", `· ${this.source.notice}`)
-      : this.following ? undefined
-      : this.pending > 0 ? this.theme.fg("warning", `+${this.pending} new`) : this.theme.fg("warning", "paused");
-    const cursor = focused ? this.theme.fg("accent", "› ") : "";
-    const header = truncateToWidth(`${cursor}${name} ${this.theme.fg("muted", `· ${meta}`)}${tag ? ` · ${tag}` : ""}`, width);
-    const tint = this.spec.main ? this.theme.fg("borderAccent", "─".repeat(Math.max(1, width))) : paintAgent(this.theme, this.spec.hue, "─".repeat(Math.max(1, width)));
-    const rule = truncateToWidth(tint, width);
-    const visible = body.slice(this.resolvedOffset(), this.resolvedOffset() + rows);
-    const lines = [header, rule, ...visible];
-    while (lines.length < height) lines.push("");
-    return lines.slice(0, Math.max(1, height)).map((line) => truncateToWidth(line, width));
-  }
-  /**
-   * Wrapped body lines. Blocks are cached per width and only the entries parsed
-   * since the last render are wrapped, so a live run appends instead of re-wrapping
-   * the whole transcript every second.
-   */
+  /** Body lines from Pi's components; the transcript caches them per width. */
   private bodyLines(width: number): string[] {
     this.lastWidth = Math.max(1, width);
-    const matches = this.wrap?.width === width
-      && this.wrap.showThinking === this.filters.showThinking
-      && this.wrap.collapseResults === this.filters.collapseResults;
-    let current: WrapCache;
-    if (matches) current = this.wrap!;
-    else {
-      current = { width, showThinking: this.filters.showThinking, collapseResults: this.filters.collapseResults, entries: 0, blocks: [], flat: [], errors: [] };
-      this.wrap = current;
-      this.rebuilds += 1;
+    if (!this.native) {
+      this.native = new NativeTranscript({
+        cwd: this.spec.cwd ?? process.cwd(),
+        ui: this.ui,
+        outputPad: this.outputPad,
+        hideThinking: !this.filters.showThinking,
+        expanded: this.filters.collapseResults,
+        renderers: this.renderers,
+      });
+      this.native.apply(this.source.text.slice(0, this.parsedChars));
     }
-    const inner = Math.max(1, width - 2);
-    const paint = this.band();
-    for (let index = current.entries; index < this.entries.length; index++) {
-      const entry = this.entries[index]!;
-      const block = this.wrapEntry(entry, width, inner, paint);
-      if (block) {
-        if (current.flat.length) current.flat.push("");
-        if (block.error) current.errors.push(current.flat.length);
-        current.flat.push(...block.lines);
-        current.blocks.push(block);
-      }
-    }
-    current.entries = this.entries.length;
-    return current.flat;
-  }
-  /** One entry as a block, honouring the filters; undefined means "hidden". */
-  private wrapEntry(entry: TranscriptEntry, width: number, inner: number, paint: ((text: string) => string) | undefined): WrapBlock | undefined {
-    if (entry.kind === "thinking" && !this.filters.showThinking) return undefined;
-    const described = describeEntry(entry, this.theme, paint);
-    let body = described.body;
-    if (entry.kind === "toolResult" && this.filters.collapseResults) {
-      const rows = body.split("\n");
-      if (rows.length > 1) body = `${rows[0]} (+${rows.length - 1} line${rows.length === 2 ? "" : "s"})`;
-    }
-    const lines = [truncateToWidth(described.label, width)];
-    for (const raw of body.split("\n")) {
-      for (const wrapped of wrapTextWithAnsi(raw || " ", inner)) lines.push(truncateToWidth(`  ${wrapped}`, width));
-    }
-    return { lines, error: entry.kind === "toolResult" && entry.isError };
+    return this.native.render(this.lastWidth);
   }
 }
 
 /* ---------- agent transcript screen ---------- */
 
-/** Below this width two columns cannot both stay readable. */
-export const MIN_TWO_COLUMN_WIDTH = 80;
-
 export interface AgentTranscriptOptions {
   theme: FabricTheme;
   specs: readonly TranscriptPaneSpec[];
+  /** Pi's TUI: tool components render through it. */
+  ui: TUI;
+  outputPad?: number;
+  renderers?: ReadonlyMap<string, ToolRenderers>;
   onClose?: () => void;
   /** `o`: the caller writes a Markdown copy and opens it in the editor. */
   onOpen?: (pane: TranscriptPane) => void;
@@ -574,12 +555,11 @@ export interface AgentTranscriptOptions {
 }
 
 /**
- * The full-window transcript screen: one agent, or two side by side (a comparison
- * group). Each column keeps its own parser, scroll position and hue. Keys: tab
- * switches focus, `s` toggles one/two columns, page keys scroll the focused
- * column, esc steps back; `o` and `y` hand the focused run to the caller.
- * Reading keys: `/` searches incrementally, `n`/`N` walk matches, `t` hides
- * thinking, `r` collapses tool results, `e` jumps to the next failure.
+ * The full-window transcript screen: one agent at a time, full width, rendered
+ * with Pi's own chat components. `tab` switches between the members of a
+ * comparison group, `f`/End resume following, `/` searches, `t` hides thinking,
+ * `r` toggles tool output, `e` jumps to a failure, `o`/`y` hand the run to the
+ * editor or the clipboard, and esc steps back.
  */
 export class AgentTranscriptOverlay implements Component {
   private readonly theme: FabricTheme;
@@ -587,7 +567,6 @@ export class AgentTranscriptOverlay implements Component {
   private readonly onClose?: () => void;
   private readonly onOpen?: (pane: TranscriptPane) => void;
   private readonly onCopy?: (pane: TranscriptPane) => void;
-  private columns: 1 | 2;
   private focus = 0;
   private height = 24;
   /** Search state: the query is kept after Enter so `n`/`N` can walk it. */
@@ -601,8 +580,13 @@ export class AgentTranscriptOverlay implements Component {
     this.onClose = options.onClose;
     this.onOpen = options.onOpen;
     this.onCopy = options.onCopy;
-    this.panes = options.specs.slice(0, 2).map((spec) => new TranscriptPane({ theme: options.theme, spec }));
-    this.columns = this.panes.length > 1 ? 2 : 1;
+    this.panes = options.specs.slice(0, 2).map((spec) => new TranscriptPane({
+      theme: options.theme,
+      spec,
+      ui: options.ui,
+      ...(options.outputPad === undefined ? {} : { outputPad: options.outputPad }),
+      ...(options.renderers ? { renderers: options.renderers } : {}),
+    }));
   }
   /** All panes, including any not currently visible because the pair is capped at two. */
   get allPanes(): readonly TranscriptPane[] { return this.panes; }
@@ -618,8 +602,18 @@ export class AgentTranscriptOverlay implements Component {
   setSource(id: string, source: TranscriptSource): void {
     this.panes.find((item) => item.id === id)?.setSource(source);
   }
-  private effectiveColumns(width: number): 1 | 2 {
-    return this.columns === 2 && this.panes.length > 1 && width >= MIN_TWO_COLUMN_WIDTH ? 2 : 1;
+  /**
+   * The transcript fills the window, so every wheel tick belongs to it. Consuming the
+   * event here is also what stops Pi from scrolling the chat underneath.
+   */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type === "wheel") {
+      const focused = this.panes[this.focus];
+      if (focused && event.wheelDelta) focused.scrollBy(event.wheelDelta);
+      return { handled: true };
+    }
+    // Presses and drags belong to the screen; text selection is the chat's, not this viewer's.
+    return event.type === "press" || event.type === "click" || event.type === "drag" ? { handled: true } : undefined;
   }
   handleInput(input: string): void {
     const focused = this.panes[this.focus];
@@ -644,8 +638,7 @@ export class AgentTranscriptOverlay implements Component {
     if (input === "t") { focused?.toggleThinking(); return; }
     if (input === "r") { focused?.toggleResults(); return; }
     if (input === "e") { this.jumpError(); return; }
-    if (input === "s" && this.panes.length > 1) { this.columns = this.columns === 2 ? 1 : 2; return; }
-    if (matchesKey(input, Key.tab) && this.panes.length > 1) { this.focus = (this.focus + 1) % this.panes.length; return; }
+    if (matchesKey(input, Key.tab) && this.panes.length > 1) { this.focus = (this.focus + 1) % this.panes.length; this.matchIndex = -1; return; }
     if (input === "o") { if (focused) this.onOpen?.(focused); return; }
     if (input === "y") { if (focused) this.onCopy?.(focused); return; }
     if (focused) focused.scroll(input);
@@ -674,48 +667,33 @@ export class AgentTranscriptOverlay implements Component {
   private matchSummary(pane: TranscriptPane | undefined): string | undefined {
     if (!this.query) return undefined;
     const total = pane?.findMatches(this.query).length ?? 0;
-    return `${this.searching ? "/" : ""}${this.query}${this.searching ? "▍" : ""} · ${total} match${total === 1 ? "" : "es"}`;
+    return `${this.searching ? "/" : ""}${this.query}${this.searching ? "\u258d" : ""} \u00b7 ${total} match${total === 1 ? "" : "es"}`;
   }
   render(width: number): string[] {
     if (width < 1) return [];
     const height = this.height;
     const bodyHeight = Math.max(3, height - 2);
-    const columns = this.effectiveColumns(width);
     const focused = this.panes[this.focus] ?? this.panes[0];
     if (!focused) return Array.from({ length: height }, () => "");
-    const footer = this.footer(width, columns);
-    if (columns === 1 || this.panes.length < 2) {
-      const lines = focused.render(width, bodyHeight, false);
-      return [...lines, "", footer].slice(0, height).map((line) => truncateToWidth(line, width));
-    }
-    const colWidth = Math.max(1, Math.floor((width - 1) / 2));
-    const gap = truncateToWidth(this.theme.fg("border", "│"), 1);
-    const left = this.panes[0]!.render(colWidth, bodyHeight, this.focus === 0);
-    const right = this.panes[1]!.render(colWidth, bodyHeight, this.focus === 1);
-    const lines: string[] = [];
-    for (let index = 0; index < bodyHeight; index++) {
-      const l = truncateToWidth(left[index] ?? "", colWidth);
-      const r = truncateToWidth(right[index] ?? "", colWidth);
-      const padded = l + " ".repeat(Math.max(0, colWidth - visibleWidth(l)));
-      lines.push(truncateToWidth(`${padded}${gap}${r}`, width));
-    }
-    return [...lines, "", footer].slice(0, height).map((line) => truncateToWidth(line, width));
+    const footer = this.footer(width);
+    return [...focused.render(width, bodyHeight, false), "", footer]
+      .slice(0, height)
+      .map((line) => truncateToWidth(line, width));
   }
-  private footer(width: number, columns: 1 | 2): string {
+  private footer(width: number): string {
     const focused = this.panes[this.focus];
     const search = this.matchSummary(focused);
     if (search) {
-      const hint = this.searching ? "enter keep · esc clear" : "n/N next · / new · esc clear";
+      const hint = this.searching ? "enter keep \u00b7 esc clear" : "n/N next \u00b7 / new \u00b7 esc clear";
       return truncateToWidth(`${this.theme.fg("warning", search)} ${this.theme.fg("dim", hint)}`, width);
     }
-    // The narrow-terminal note goes first so a truncation cannot hide the explanation.
     const filters = focused?.filterState;
-    const parts = ["tab focus", "s one/two", "f follow", "/ search", "o open", "y path", "pgup/pgdn scroll", "esc back"];
-    if (filters && !filters.showThinking) parts.unshift("t thinking hidden");
-    if (filters?.collapseResults) parts.unshift("r results one line");
-    const narrow = this.panes.length > 1 && columns === 1 && width < MIN_TWO_COLUMN_WIDTH;
-    if (narrow) return truncateToWidth(`${this.theme.fg("warning", "one column: too narrow for two")} ${this.theme.fg("dim", parts.join(" · "))}`, width);
-    return truncateToWidth(this.theme.fg("dim", parts.join(" · ")), width);
+    const parts = ["f follow", "/ search", "t thinking", "r output", "o open", "y path", "pgup/pgdn scroll", "esc back"];
+    if (this.panes.length > 1) parts.unshift("tab next");
+    if (filters && !filters.showThinking) parts.unshift("thinking hidden");
+    if (filters?.collapseResults) parts.unshift("output expanded");
+    const position = this.panes.length > 1 ? `${focused?.label ?? ""} ${this.focus + 1}/${this.panes.length} \u00b7 ` : "";
+    return truncateToWidth(`${this.theme.fg("dim", position)}${this.theme.fg("dim", parts.join(" \u00b7 "))}`, width);
   }
 }
 
@@ -769,6 +747,14 @@ export class AgentsScreen implements Component {
     return { selectedId: this.rows[this.selected]?.id, confirming: this.confirm?.id };
   }
   invalidate(): void { /* Rendering is calculated fresh each frame. */ }
+  /** Wheel moves the list selection; the chat behind the screen must never scroll. */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type === "wheel") {
+      if (event.wheelDelta) this.handleInput(event.wheelDelta > 0 ? "j" : "k");
+      return { handled: true };
+    }
+    return event.type === "press" || event.type === "click" || event.type === "drag" ? { handled: true } : undefined;
+  }
   handleInput(input: string): void {
     if (this.confirm) {
       if (input === "y" || input === "Y") { const row = this.confirm; this.confirm = undefined; this.onCancel(row); return; }

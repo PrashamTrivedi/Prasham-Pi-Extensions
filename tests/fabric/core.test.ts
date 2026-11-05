@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { altJumpAllowed, altJumpConflicts, buildChildArgs, capturePatch, effectiveRule, isGone, liveAgents, matchAgent, onPath, openTranscriptInEditor, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, IDLE_GONE_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
+import { altJumpAllowed, altJumpConflicts, buildChildArgs, capturePatch, effectiveRule, isGone, liveAgents, matchAgent, onPath, readChatPad, openTranscriptInEditor, readSessionChunk, readTranscript, reconcileRootConfig, requestedRule, resolveConfig, resolveSessionFile, IDLE_GONE_MS, type FabricConfig, type FabricState } from "../../extensions/fabric/index.ts";
 
 const temporary: string[] = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), "fabric-test-")); temporary.push(path); return path; };
@@ -139,6 +139,20 @@ test("transcript reads replay whole lines, keep the tail when capped, and resume
   expect(missing.text).toBe("");
   expect(missing.notice).toContain("Unable to read");
   expect(missing.live).toBe(false);
+});
+
+test("the transcript uses Pi's chat padding from the agent settings", () => {
+  const dir = temp();
+  const home = join(dir, "home");
+  expect(readChatPad({}, home)).toBe(1);
+  const agentDir = join(dir, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ outputPad: 2 }));
+  expect(readChatPad({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(2);
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ outputPad: 99 }));
+  expect(readChatPad({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(4);
+  writeFileSync(join(agentDir, "settings.json"), "{oops");
+  expect(readChatPad({ PI_CODING_AGENT_DIR: agentDir }, home)).toBe(1);
 });
 
 test("a transcript opens in the editor only when the command is on PATH", () => {

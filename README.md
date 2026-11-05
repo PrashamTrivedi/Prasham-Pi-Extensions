@@ -107,25 +107,33 @@ model's context.
 collapses, `Enter` opens, `x` cancels an agent and its descendants (after a `y/n` confirmation), and
 `Esc` returns to the chat.
 
-Opening an agent replaces the chat with **its full conversation** — every message, tool call, and
-tool result — with the agent's color on the header, a rule, and its message bands so it is obvious
-you are not in the main chat. `Esc` returns to `/agents`, `Esc` again to the chat. The main chat
-opens the same way, read from the live session.
+Opening an agent replaces the chat with **its full conversation**, rendered with Pi's own chat
+components: markdown, thinking runs, and the real bash/read/edit tool cards, collapsed exactly as in
+the live window. Fabric adds one header line (`◆ api · qwen · done · $0.04 · 12k · read`) and a key
+footer. `Esc` returns to `/agents`, `Esc` again to the chat. The main chat opens the same way, read
+from the live session.
 
-Agents spawned by one `spawn_agents` call form a comparison group: one group row, opened as two
-columns with its own header per agent. `s` toggles between two columns and one at a time, `tab`
-switches which column the page keys scroll.
+Transcripts follow the run: a pane opens at the end, scrolling up (wheel or keys) pauses it with a
+`+N new` count, and `f`/`End` (or scrolling back to the bottom) resumes. The screen covers the chat,
+so the wheel and paging keys scroll the run, never the chat behind it. A session over 4 MB replays
+its tail.
+
+Agents spawned by one `spawn_agents` call form a comparison group: one group row, opened one member
+at a time at full width; `tab` switches members.
 
 | Key | In `/agents` | In a transcript |
 | --- | --- | --- |
-| `↑` / `↓`, `j` / `k` | Select | Scroll the focused agent |
+| `↑` / `↓`, `j` / `k` | Select | Scroll the agent |
 | `→` / `←` | Expand / collapse | — |
 | `Enter` | Open the selected agent or group | — |
 | `x` | Cancel the selected agent (+ descendants) | — |
-| `s` | — | One column / two columns |
-| `tab` | — | Focus the other agent |
-| `PageUp` / `PageDown`, `Home` / `End` | — | Scroll / jump |
-| `Esc` | Close the list | Back to `/agents` |
+| `tab` | — | Next member of a comparison group |
+| `f` / `End`, `Home` | — | Follow / jump to the end / top |
+| `/`, then `n` / `N` | — | Incremental search, next/previous match |
+| `t` / `r` / `e` | — | Hide thinking / expand tool output / next failure |
+| `o` / `y` | — | Export Markdown to `zed` / copy the session path |
+| `PageUp` / `PageDown` | — | Scroll |
+| `Esc` | Close the list | Clear the search, then back to `/agents` |
 
 ### Agent tools
 
