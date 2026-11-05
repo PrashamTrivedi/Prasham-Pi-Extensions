@@ -1,6 +1,9 @@
 {
-  "pet": { "enabled": true, "theme": "auto", "badges": true },
+  "pet": { "enabled": true, "theme": "auto", "badges": true, "art": true, "signOff": true, "lines": true },
   "statusline": { "enabled": true, "showTokens": true },
-  "cockpit": { "enabled": true },
-  "observability": { "enabled": true }
+  "cockpit": { "enabled": true, "mode": "compact", "maxRows": 8 },
+  "observability": { "enabled": true },
+  "hud": { "enabled": true, "pollSec": 5 },
+  "deploy": { "enabled": true },
+  "decorate": { "enabled": true }
 }

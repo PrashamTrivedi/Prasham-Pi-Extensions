@@ -44,7 +44,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | **Fabric** | Recursive agent teams, worktree isolation, live agent rows, comparisons, and per-agent transcripts | `/agents`, four agent tools |
 | **BTW** | A main-chat-only side chat that answers from the current transcript and can stage a summary in the editor | `/btw`, `/btw send`, `PI_BTW_MODEL` |
 | **Usage** | Shows opencode-go rolling / weekly / monthly quota windows in one status segment | `/usage`, `usage.config.json` |
-| **Workbench** | Pet indicator, two-line footer, and a cockpit docked above the editor with context, provider usage, and recent decisions | `/cockpit`, `workbench.config.json` |
+| **Workbench** | Pet indicator with themed pixel badges and sign-off, two-line footer, and a cockpit docked above the editor with context, provider usage, recent decisions, and the shared HUD feed; deploy tracker and verdict toasts | `/cockpit`, `/hud`, `workbench.config.json` |
 | **Duck** | Docked questions-only second opinion; `/duck answer` collects answers with a Claude-style questionnaire | `/duck`, `/duck answer` |
 | **Project context** | Adds the working directory, a bounded directory tree, and Git state (branch, remote, uncommitted files) to the system prompt | `PI_TREE_DEPTH`, `PI_TREE_MAX`, `PI_GIT_STATUS_MAX` |
 | **Recursive context** | Loads nested `AGENTS.md` / `CLAUDE.md` in trusted projects | `PI_RECURSIVE_CONTEXT_MAX`, `PI_RECURSIVE_CONTEXT_NAMES` |

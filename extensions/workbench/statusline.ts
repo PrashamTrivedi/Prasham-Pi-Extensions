@@ -6,6 +6,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { WorkbenchConfig } from "./config.ts";
+import { petSignOff } from "./pet.ts";
 import { duration, statusLine, tokenTotals } from "./stats.ts";
 
 export function registerStatusline(pi: ExtensionAPI, getConfig: () => WorkbenchConfig): void {
@@ -28,6 +29,8 @@ export function registerStatusline(pi: ExtensionAPI, getConfig: () => WorkbenchC
           const usageStatus = footerData.getExtensionStatuses().get("usage");
           const lines = [theme.fg("dim", truncateToWidth(line1, width))];
           if (usageStatus) lines.push(truncateToWidth(usageStatus, width));
+          const signOff = petSignOff();
+          if (signOff && getConfig().pet.enabled) lines.push(theme.fg("dim", truncateToWidth(signOff, width)));
           return lines;
         },
         invalidate: () => {},

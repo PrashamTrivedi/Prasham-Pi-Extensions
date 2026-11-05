@@ -1,19 +1,25 @@
 import { isBoolean, isString, loadConfig, objectValidator, type LoadedConfig } from "../shared/config.ts";
 
 export type WorkbenchConfig = {
-  pet: { enabled: boolean; theme: string; badges: boolean };
+  pet: { enabled: boolean; theme: string; badges: boolean; art: boolean; signOff: boolean; lines: boolean };
   statusline: { enabled: boolean; showTokens: boolean };
-  cockpit: { enabled: boolean };
+  cockpit: { enabled: boolean; mode: "compact" | "full"; maxRows: number };
   observability: { enabled: boolean };
+  hud: { enabled: boolean; pollSec: number };
+  deploy: { enabled: boolean };
+  decorate: { enabled: boolean };
 };
 
 export const WORKBENCH_CONFIG_NAME = "workbench";
 
 export const DEFAULT_WORKBENCH_CONFIG: WorkbenchConfig = {
-  pet: { enabled: true, theme: "auto", badges: true },
+  pet: { enabled: true, theme: "auto", badges: true, art: true, signOff: true, lines: true },
   statusline: { enabled: true, showTokens: true },
-  cockpit: { enabled: true },
+  cockpit: { enabled: true, mode: "compact", maxRows: 8 },
   observability: { enabled: true },
+  hud: { enabled: true, pollSec: 5 },
+  deploy: { enabled: true },
+  decorate: { enabled: true },
 };
 
 function section(value: unknown): Record<string, unknown> {
@@ -30,6 +36,9 @@ const validate = objectValidator({
   statusline: isSection,
   cockpit: isSection,
   observability: isSection,
+  hud: isSection,
+  deploy: isSection,
+  decorate: isSection,
 });
 
 function pick<T>(value: unknown, fallback: T, guard: (v: unknown) => boolean): T {
@@ -41,18 +50,37 @@ function mergeWorkbenchConfig(base: WorkbenchConfig, override: Record<string, un
   const statusline = section(override.statusline);
   const cockpit = section(override.cockpit);
   const observability = section(override.observability);
+  const hud = section(override.hud);
+  const deploy = section(override.deploy);
+  const decorate = section(override.decorate);
   return {
     pet: {
       enabled: pick(pet.enabled, base.pet.enabled, isBoolean),
       theme: pick(pet.theme, base.pet.theme, isString),
       badges: pick(pet.badges, base.pet.badges, isBoolean),
+      art: pick(pet.art, base.pet.art, isBoolean),
+      signOff: pick(pet.signOff, base.pet.signOff, isBoolean),
+      lines: pick(pet.lines, base.pet.lines, isBoolean),
     },
     statusline: {
       enabled: pick(statusline.enabled, base.statusline.enabled, isBoolean),
       showTokens: pick(statusline.showTokens, base.statusline.showTokens, isBoolean),
     },
-    cockpit: { enabled: pick(cockpit.enabled, base.cockpit.enabled, isBoolean) },
+    cockpit: {
+      enabled: pick(cockpit.enabled, base.cockpit.enabled, isBoolean),
+      mode: cockpit.mode === "full" || cockpit.mode === "compact" ? cockpit.mode : base.cockpit.mode,
+      maxRows:
+        typeof cockpit.maxRows === "number" && Number.isFinite(cockpit.maxRows)
+          ? Math.min(30, Math.max(3, Math.round(cockpit.maxRows)))
+          : base.cockpit.maxRows,
+    },
     observability: { enabled: pick(observability.enabled, base.observability.enabled, isBoolean) },
+    hud: {
+      enabled: pick(hud.enabled, base.hud.enabled, isBoolean),
+      pollSec: typeof hud.pollSec === "number" && Number.isFinite(hud.pollSec) ? Math.min(60, Math.max(1, hud.pollSec)) : base.hud.pollSec,
+    },
+    deploy: { enabled: pick(deploy.enabled, base.deploy.enabled, isBoolean) },
+    decorate: { enabled: pick(decorate.enabled, base.decorate.enabled, isBoolean) },
   };
 }
 
