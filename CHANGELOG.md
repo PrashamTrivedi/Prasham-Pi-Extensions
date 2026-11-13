@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`/memory find` searches both stores.** The command reports local Markdown memories (name hit, description hit, body excerpt) and asks the `memory-server` MCP store (`find_memories`) in the same pass, printing one `pi-memory-find` message. Extensions get no MCP client, so the server half is a direct JSON-RPC `tools/call` with the token from `mcp-auth.json`; an expired token or outage degrades to local hits with a note.
 - **The transcript screen owns the scroll.** It is now an opaque full-width overlay instead of a panel squeezed above the editor, so the chat is not visible behind it, and it marks itself `capturesViewportInput` with a mouse handler: the wheel and `PageUp`/`PageDown`/arrows move the run instead of scrolling the chat underneath. The `/agents` list does the same. `tab` still switches comparison members.
 - **The Fabric agent view renders like Pi's own window.** A replayed run is built from Pi's exported chat components (`UserMessageComponent`, `AssistantMessageComponent`, `ToolExecutionComponent`) and the built-in tool renderers, so markdown, thinking runs, bash/read/edit cards, collapsed read results and `ctrl+o` expansion match the window it came from. Fabric keeps one header line (`◆ api · qwen · done · $0.04 · 12k · read`) and the follow/search/filter keys; a batch opens one member at a time at full width and `tab` switches. The old hand-rolled renderer showed literal markdown, raw JSON tool arguments and a plain `thinking` label.
 

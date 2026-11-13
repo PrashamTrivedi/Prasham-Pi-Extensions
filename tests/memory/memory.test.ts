@@ -13,8 +13,14 @@ import memory, {
 
 function harness(extension: Function, cwd: string) {
  const hooks = new Map<string, Function>();
- extension({ on: (name: string, handler: Function) => hooks.set(name, handler) });
- return { hooks, ctx: { cwd } };
+ const commands = new Map<string, any>();
+ const messages: any[] = [];
+ extension({
+  on: (name: string, handler: Function) => hooks.set(name, handler),
+  registerCommand: (name: string, command: any) => commands.set(name, command),
+  sendMessage: (message: any) => messages.push(message),
+ });
+ return { hooks, commands, messages, ctx: { cwd } };
 }
 
 function withRoot<T>(root: string, run: () => T): T {
@@ -84,4 +90,51 @@ test('session start creates the directory and every run injects the protocol', a
   expect(prompt).toContain('## Project memory');
   expect(prompt).toContain(dir);
  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('memory find reports local hits and a disconnected server without failing', async () => {
+ const root = mkdtempSync(join(tmpdir(), 'pi-memory-root-'));
+ const agent = mkdtempSync(join(tmpdir(), 'pi-memory-agent-'));
+ const previousAgent = process.env.PI_CODING_AGENT_DIR;
+ const previousRoot = process.env.PI_MEMORY_ROOT;
+ // No mcp-auth.json in this agent dir, so the command stays offline.
+ process.env.PI_CODING_AGENT_DIR = agent;
+ // Set for the whole async test: withRoot() restores on return, before the awaits run.
+ process.env.PI_MEMORY_ROOT = root;
+ const cwd = '/root/Code/Projects/memory-search-fixture';
+ try {
+  const dir = memoryDirFor(cwd);
+  const { hooks, ctx } = harness(memory, cwd);
+  hooks.get('session_start')!({}, ctx);
+  writeFileSync(join(dir, 'next_release.md'), '---\nname: Release plan\ndescription: cut the release\ntype: next\n---\n\nWait for CI.\n');
+  writeFileSync(join(dir, 'MEMORY.md'), '# Memory Index\n\n- [next_release.md](next_release.md) \u2014 cut the release\n');
+
+  const notes: string[] = [];
+  const view = { cwd, ui: { notify: (message: string) => notes.push(message) } };
+  const { commands, messages } = harness(memory, cwd);
+  await commands.get('memory')!.handler('find release', view);
+  expect(messages).toHaveLength(1);
+  const text = String(messages[0]!.content);
+  expect(messages[0]!.customType).toBe('pi-memory-find');
+  expect(text).toContain('1 local, 0 memory-server');
+  expect(text).toContain('next_release.md');
+  expect(text).toContain('cut the release');
+  expect(text).toContain('memory-server not connected');
+
+  // `/memory` alone names the directory and the memory count.
+  await commands.get('memory')!.handler('', view);
+  expect(notes[0]).toContain(dir);
+  expect(notes[0]).toContain('1 memories');
+
+  // `/memory find` without a query explains the usage instead of searching.
+  await commands.get('memory')!.handler('find', view);
+  expect(notes[1]).toContain('Usage: /memory find');
+ } finally {
+  if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgent;
+  if (previousRoot === undefined) delete process.env.PI_MEMORY_ROOT;
+  else process.env.PI_MEMORY_ROOT = previousRoot;
+  rmSync(root, { recursive: true, force: true });
+  rmSync(agent, { recursive: true, force: true });
+ }
 });
