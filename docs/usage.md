@@ -10,6 +10,12 @@ it is cleared when another provider becomes active.
   `GET https://opencode.ai/zen/go/v1/usage`.
 - Locally observed token totals for the session.
 
+The footer percentage of each window is colored by **pace**, not by its value: the extension
+projects when the limit would be reached at the current rate and compares that with the reset
+(green: not reached before the reset; yellow: reached with a short gap; red: a gap at least twice
+the reference). The math and its reference gaps live in `extensions/shared/usage-pace.ts`; the
+cockpit uses the same colors. A window without a reset time falls back to percent pressure.
+
 The provider API returns percentages only — no token counts, no cost, and no price list
 is published for these models — so no dollar figure is invented. Locally counted tokens
 are shown; money is not.

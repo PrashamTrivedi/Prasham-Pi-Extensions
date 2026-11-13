@@ -3,6 +3,9 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildCockpitSections,
   formatReset,
+  expandedRowBudget,
+  formatResetExact,
+  nextCockpitMode,
   renderCockpitCompact,
   renderCockpitPanel,
   renderCockpitWidget,
@@ -212,10 +215,182 @@ describe("formatReset", () => {
     }
   });
 
-  test("full mode caps the body at maxRows and says how many rows are hidden", () => {
+  test("full mode caps the body at maxRows and points at the view that reveals more", () => {
     const uncapped = renderCockpitPanel(plain, 100, populated);
     const capped = renderCockpitWidget(plain, 100, populated, Date.now(), { mode: "full", maxRows: 4 });
     expect(capped.length).toBeLessThan(uncapped.length);
+    expect(capped.join("\n")).toMatch(/\+\d+ more · \/cockpit expanded/);
+    expect(capped.join("\n")).not.toContain("/cockpit compact");
+  });
+});
+
+describe("pace-colored usage windows", () => {
+  const now = Date.parse("2026-11-13T12:00:00.000Z");
+  const at = (ms: number): string => new Date(now + ms).toISOString();
+  const withWindows = (percent: number, resetInMs: number): CockpitInput => ({
+    ...populated,
+    usage: { provider: "opencode-go", windows: [{ label: "rolling", percent, resetsAt: at(resetInMs) }] },
+  });
+
+  test("a slow window is green and a fast one is red, regardless of percent", () => {
+    const slow = renderCockpitPanel(tagged, 120, withWindows(40, 2.5 * 3_600_000), now).join("\n");
+    expect(slow).toContain("<success:40%>");
+    const fast = renderCockpitPanel(tagged, 120, withWindows(51, 2.5 * 3_600_000), now).join("\n");
+    expect(fast).toContain("<warning:51%>");
+    const worst = renderCockpitPanel(tagged, 120, withWindows(60, 2.5 * 3_600_000), now).join("\n");
+    expect(worst).toContain("<error:60%>");
+  });
+
+  test("compact mode colors the same way", () => {
+    const line = renderCockpitCompact(tagged, 400, withWindows(60, 2.5 * 3_600_000), now)[0]!;
+    expect(line).toContain("<muted:rolling> <error:60%>");
+  });
+
+  test("expanded mode shows the exact reset date instead of a shorthand", () => {
+    const input = withWindows(40, 3 * 3_600_000);
+    const compact = renderCockpitPanel(plain, 120, input, now).join("\n");
+    const expanded = renderCockpitPanel(plain, 120, input, now, Number.POSITIVE_INFINITY, true).join("\n");
+    expect(compact).toContain("resets 3h");
+    expect(expanded).toContain(`resets ${formatResetExact(input.usage!.windows[0]!.resetsAt, now)}`);
+    expect(expanded).not.toContain("resets 3h");
+  });
+});
+
+describe("formatResetExact", () => {
+  // Built from local parts, so the assertion holds in any timezone.
+  const local = new Date(2026, 10, 16, 0, 0, 0);
+
+  test("formats weekday, day, month and local time", () => {
+    expect(formatResetExact(local.toISOString(), local.getTime() - 60_000)).toBe("Mon 16 Nov 00:00");
+  });
+
+  test("adds the year only when it differs", () => {
+    const next = new Date(2027, 0, 5, 9, 5, 0);
+    expect(formatResetExact(next.toISOString(), local.getTime())).toBe("Tue 5 Jan 2027 09:05");
+  });
+
+  test("reports a past reset as now and ignores invalid input", () => {
+    expect(formatResetExact(local.toISOString(), local.getTime() + 60_000)).toBe("now");
+    expect(formatResetExact(undefined, local.getTime())).toBeUndefined();
+    expect(formatResetExact("nope", local.getTime())).toBeUndefined();
+  });
+});
+
+describe("expanded view", () => {
+  const now = Date.parse("2026-11-13T12:00:00.000Z");
+  const jev: HudCard = {
+    source: "jev",
+    title: "Jev · shell-safety",
+    status: "ok",
+    progress: null,
+    // 60 chars: the full view clips at 34, expanded keeps it and wraps the panel.
+    lines: [`→ pass · bash · 574ms · ${"x".repeat(37)}`],
+    updatedAt: now - 4_000,
+    ttlSec: 600,
+    detail: ["detail line one"],
+    sections: [
+      { title: "Verdict", open: true, tone: "ok", lines: ["action: none (not applied)", "mode: enforce"] },
+      { title: "Answers", open: false, summary: "2 in 574ms", lines: ["hidden line"] },
+    ],
+  };
+  const input: CockpitInput = {
+    ...populated,
+    tokens: 1500,
+    contextWindow: 200_000,
+    hud: { at: now, stale: 0, cards: [jev] },
+  };
+  const expanded = renderCockpitPanel(plain, 160, input, now, Number.POSITIVE_INFINITY, true).join("\n");
+  const full = renderCockpitPanel(plain, 160, input, now).join("\n");
+
+  test("shows the context window and known ceilings", () => {
+    expect(expanded).toContain("1,500 / 200,000 tok");
+    expect(expanded).toContain("≤ 8,000 chars · project-context tree");
+    expect(expanded).toContain("recursive-context");
+    expect(full).not.toContain("1,500 / 200,000 tok");
+  });
+
+  test("expands HUD sections in place, without duplicating detail", () => {
+    expect(expanded).toContain("▾ Verdict");
+    expect(expanded).toContain("action: none (not applied)");
+    expect(expanded).toContain("▸ Answers  2 in 574ms");
+    expect(expanded).not.toContain("hidden line");
+    expect(expanded).not.toContain("detail line one");
+    expect(full).not.toContain("Verdict");
+  });
+
+  test("shows a card's raw detail when it has no sections", () => {
+    const plainCard: HudCard = { ...jev, source: "deploy", title: "backend: deployed", sections: [], detail: ["deployed 89b9f87", "HEAD 89b9f87"] };
+    const out = renderCockpitPanel(plain, 160, { ...input, hud: { at: now, stale: 0, cards: [plainCard] } }, now, Number.POSITIVE_INFINITY, true).join("\n");
+    expect(out).toContain("▾ Detail");
+    expect(out).toContain("deployed 89b9f87");
+  });
+
+  test("keeps card lines untruncated for a card without sections", () => {
+    const plainCard: HudCard = { ...jev, source: "deploy", title: "deploy: backend", status: "ok", lines: ["deployed 89b9f87 · " + "x".repeat(37)], sections: [], detail: [] };
+    const out = renderCockpitPanel(plain, 160, { ...input, hud: { at: now, stale: 0, cards: [plainCard] } }, now, Number.POSITIVE_INFINITY, true).join("\n");
+    expect(out).toContain("x".repeat(37));
+    expect(full).not.toContain("x".repeat(37));
+  });
+
+  test("a card with sections replaces its summary lines instead of repeating them", () => {
+    expect(expanded).not.toContain("→ pass · bash · 574ms · " + "x".repeat(37));
+  });
+
+  test("maxRows counts wrapped rows, not source rows", () => {
+    const long: HudCard = { ...jev, sections: [], detail: [], lines: ["y".repeat(400)] };
+    const capped = renderCockpitWidget(plain, 100, { ...input, hud: { at: now, stale: 0, cards: [long] } }, now, { mode: "expanded", maxRows: 8 });
+    // 8 body rows + top border + footer separator + footer + bottom border.
+    expect(capped.length).toBeLessThanOrEqual(12);
+    expect(capped.join("\n")).toMatch(/\+\d+ more · \/hud <source> for all/);
+  });
+
+  test("the widget renders expanded and still honors maxRows", () => {
+    const uncapped = renderCockpitWidget(plain, 160, input, now, { mode: "expanded", maxRows: 500 });
+    expect(uncapped.join("\n")).toContain("▾ Verdict");
+    const capped = renderCockpitWidget(plain, 160, input, now, { mode: "expanded", maxRows: 5 });
     expect(capped.join("\n")).toMatch(/\+\d+ more/);
+  });
+
+  test("the footer says how to collapse", () => {
+    expect(buildCockpitSections(input, { expanded: true, now }).footer).toContain("/cockpit collapse");
+  });
+});
+
+describe("expandedRowBudget", () => {
+  test("uses about 45% of the terminal, never less than the configured maxRows", () => {
+    expect(expandedRowBudget(40, 8)).toBe(18);
+    expect(expandedRowBudget(24, 8)).toBe(11);
+    expect(expandedRowBudget(80, 8)).toBe(36);
+    // A tiny terminal falls back to the configured cap.
+    expect(expandedRowBudget(12, 8)).toBe(8);
+    // A raised maxRows still wins.
+    expect(expandedRowBudget(50, 20)).toBe(23);
+    expect(expandedRowBudget(Number.NaN, 8)).toBe(18);
+  });
+
+  test("an expanded dock leaves the transcript most of a 40-row screen", () => {
+    const rows = expandedRowBudget(40, 8);
+    expect(rows).toBeLessThan(20);
+    expect(rows).toBeGreaterThan(8);
+  });
+});
+
+describe("nextCockpitMode", () => {
+  test("collapse is an alias for compact", () => {
+    expect(nextCockpitMode("expanded", "collapse")).toBe("compact");
+    expect(nextCockpitMode("full", " COLLAPSE ")).toBe("compact");
+    expect(nextCockpitMode("compact", "compact")).toBe("compact");
+  });
+
+  test("full and expanded switch, with expanded as a toggle", () => {
+    expect(nextCockpitMode("compact", "full")).toBe("full");
+    expect(nextCockpitMode("full", "expanded")).toBe("expanded");
+    expect(nextCockpitMode("expanded", "expanded")).toBe("full");
+    expect(nextCockpitMode("full", "expand")).toBe("expanded");
+  });
+
+  test("anything else leaves the dock toggle alone", () => {
+    expect(nextCockpitMode("full", "")).toBeUndefined();
+    expect(nextCockpitMode("full", "bogus")).toBeUndefined();
   });
 });

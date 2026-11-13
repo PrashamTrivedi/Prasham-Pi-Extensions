@@ -44,6 +44,10 @@ describe("loadWorkbenchConfig", () => {
     const loaded = loadWorkbenchConfig({ cwd, agentDir: join(root, "agent") });
     expect(loaded.config.cockpit.mode).toBe("full");
     expect(loaded.config.cockpit.maxRows).toBe(30);
+    write(join(cwd, ".pi"), { cockpit: { mode: "expanded" } });
+    expect(loadWorkbenchConfig({ cwd, agentDir: join(root, "agent") }).config.cockpit.mode).toBe("expanded");
+    write(join(cwd, ".pi"), { cockpit: { mode: "bogus" } });
+    expect(loadWorkbenchConfig({ cwd, agentDir: join(root, "agent") }).config.cockpit.mode).toBe("compact");
   });
 
   test("malformed JSON is reported, not thrown", () => {

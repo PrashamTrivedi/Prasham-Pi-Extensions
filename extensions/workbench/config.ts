@@ -1,9 +1,11 @@
 import { isBoolean, isString, loadConfig, objectValidator, type LoadedConfig } from "../shared/config.ts";
 
+export type CockpitViewMode = "compact" | "full" | "expanded";
+
 export type WorkbenchConfig = {
   pet: { enabled: boolean; theme: string; badges: boolean; art: boolean; signOff: boolean; lines: boolean };
   statusline: { enabled: boolean; showTokens: boolean };
-  cockpit: { enabled: boolean; mode: "compact" | "full"; maxRows: number };
+  cockpit: { enabled: boolean; mode: CockpitViewMode; maxRows: number };
   observability: { enabled: boolean };
   hud: { enabled: boolean; pollSec: number };
   deploy: { enabled: boolean };
@@ -68,7 +70,10 @@ function mergeWorkbenchConfig(base: WorkbenchConfig, override: Record<string, un
     },
     cockpit: {
       enabled: pick(cockpit.enabled, base.cockpit.enabled, isBoolean),
-      mode: cockpit.mode === "full" || cockpit.mode === "compact" ? cockpit.mode : base.cockpit.mode,
+      mode:
+        cockpit.mode === "full" || cockpit.mode === "compact" || cockpit.mode === "expanded"
+          ? cockpit.mode
+          : base.cockpit.mode,
       maxRows:
         typeof cockpit.maxRows === "number" && Number.isFinite(cockpit.maxRows)
           ? Math.min(30, Math.max(3, Math.round(cockpit.maxRows)))

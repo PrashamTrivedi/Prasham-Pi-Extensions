@@ -121,19 +121,22 @@ export function renderPanel(theme: PanelTheme, width: number, view: PanelView): 
   return { lines, offset, limit, total };
 }
 
-/** A pressure-colored progress meter, e.g. `████████░░░░░░░░ 62%`. */
-export function meter(theme: PanelTheme, percent: number | null, cells: number): string {
+/**
+ * A pressure-colored progress meter, e.g. `████████░░░░░░░░ 62%`.
+ * `color` overrides the 50/80 pressure palette, e.g. with a pace color.
+ */
+export function meter(theme: PanelTheme, percent: number | null, cells: number, color?: ThemeColor): string {
   const count = Math.max(1, cells);
   if (percent === null || !Number.isFinite(percent)) {
     return theme.fg("dim", "░".repeat(count)) + " " + theme.fg("muted", "?");
   }
   const clamped = Math.min(100, Math.max(0, percent));
   const filled = Math.round((clamped / 100) * count);
-  const color: ThemeColor = clamped < 50 ? "success" : clamped < 80 ? "warning" : "error";
+  const level: ThemeColor = color ?? (clamped < 50 ? "success" : clamped < 80 ? "warning" : "error");
   return (
-    theme.fg(color, "█".repeat(filled)) +
+    theme.fg(level, "█".repeat(filled)) +
     theme.fg("dim", "░".repeat(count - filled)) +
     " " +
-    theme.fg("muted", `${Math.round(clamped)}%`)
+    theme.fg(color ?? "muted", `${Math.round(clamped)}%`)
   );
 }

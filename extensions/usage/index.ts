@@ -70,7 +70,8 @@ export default function usage(pi: ExtensionAPI) {
     }
 
     const result = await fetchOpencodeGoUsage({ apiKey: key, baseUrl: config.opencodeGo.baseUrl });
-    setStatus(ctx, formatUsage(result));
+    // Pace colors need the theme; `setStatus` passes ANSI through to the footer.
+    setStatus(ctx, formatUsage(result, ctx.ui.theme));
     if (result.error) {
       notifyError(ctx, `usage: ${result.error}`);
     } else {

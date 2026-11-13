@@ -10,7 +10,7 @@ broken feature cannot take the others down, and failures are reported once at se
 | --- | --- | --- |
 | **Pet** | `pet` | Themed animated working indicator, per-run verbs, mood from context fill and recent real tool failures. Sub-flags: `art` (8x4 half-block theme badge below the editor while a run works; Marvel cycles stones), `signOff` (footer line `Pip: Pressed high for 2m14s` using the run's verb), `lines` (short pet lines on every third run when stuffed or sad). `/pet` shows state. |
 | **Statusline** | `statusline` | Two-line footer: branch, context %, duration and cost; then provider usage windows. |
-| **Cockpit** | `cockpit` | A panel **docked above the editor** with context, provider usage windows, and recent decisions. |
+| **Cockpit** | `cockpit` | A panel **docked above the editor** with context, provider usage windows (colored by pace), and recent decisions. `/cockpit expanded` grows it in place. |
 | **HUD** | `hud` | Cards from the shared drop dir `~/.workbench/hud/*.json` (`WORKBENCH_HUD_DIR` overrides), the same files and schema the Claude Code workbench reads, shown in the cockpit. Toasts when a known source moves to ok/warn/error. `/hud`, `/hud <source>`. |
 | **Deploy tracker** | `deploy` | A successful `wrangler deploy` / `versions upload` in bash records worker, commit and time per wrangler root (session state) and publishes HUD card `deploy-<name>` (ttl 1h). Later `git commit/merge/pull/rebase/cherry-pick` update it to "N commits not deployed". |
 | **Verdict toasts** | `decorate` | A tool call blocked by `sandbox-dev` or a jev gate shows one pet-voiced warning toast per call. |
@@ -20,7 +20,7 @@ broken feature cannot take the others down, and failures are reported once at se
 
 | Command | Purpose |
 | --- | --- |
-| `/cockpit` | Toggle the docked cockpit; `/cockpit full` / `/cockpit compact` switch the view |
+| `/cockpit` | Toggle the docked cockpit; `/cockpit full` / `/cockpit compact` switch the view, `/cockpit expanded` grows it in place (and back), `/cockpit collapse` is `compact` |
 | `/pet` | Show pet state; `/pet theme <t>`, `/pet badges` |
 | `/hud` | List HUD cards; `/hud <source>` opens one in an overlay (Esc closes) |
 | `/context` | Context-window breakdown |
@@ -72,14 +72,47 @@ as a pet failure. A bash exit 1 with no output (grep with no match) is not count
 
 ## Size
 
-The cockpit starts **compact**: one colored usage line (`◈ ctx 62% · rolling 2% · weekly 10%`;
-each percentage green below 50, yellow 50–79, red from 80; a dim `usage ?` if the provider call
-failed), then the latest HUD cards, at most 2, one line each (glyph, title, first card line, age;
-newest first, errors and warnings first on ties; no line at all when there are no cards). Tokens
-and decisions live in the full view. Below 60 columns it is a single line with a `hud 2 (1!)` count.
-`/cockpit full` shows the framed panel, capped at
-`cockpit.maxRows` body rows (default 8, range 3–30) with a `+N more` line; `/cockpit compact`
-goes back. `cockpit.mode` sets the starting view.
+The cockpit starts **compact**: one colored usage line (`◈ ctx 62% · rolling 2% · weekly 10%`), then
+the latest HUD cards, at most 2, one line each (glyph, title, first card line, age; newest first,
+errors and warnings first on ties; no line at all when there are no cards). A dim `usage ?` appears
+when the provider call failed. Tokens and decisions live in the full view. Below 60 columns it is
+a single line with a `hud 2 (1!)` count. `/cockpit full` shows the framed panel, capped at
+`cockpit.maxRows` body rows (default 8, range 3–30) with a `+N more · /cockpit expanded` line;
+`/cockpit compact` (or `collapse`) goes back. `cockpit.mode` sets the starting view.
+
+### Usage colors follow the pace, not the percent
+
+A window at 70% that resets in an hour is fine; one at 40% that has barely started is not. The
+usage API reports `percent` and `resetsAt` but no window start, so `shared/usage-pace.ts` infers
+the window length from the label (`rolling` 5h, `weekly` 7d, `monthly` 30d), projects when the
+limit would be reached at the current pace, and compares that with the reset:
+
+| Color | Meaning |
+| --- | --- |
+| green | the limit is not reached before the reset |
+| yellow | it is reached, with a short gap before the reset |
+| red | the gap is at least twice the yellow reference |
+
+Yellow references: 10 minutes (rolling), 2 hours (weekly), 5 hours (monthly); red starts at twice
+it. A window counts as at least 10% elapsed, so one early burst is not extrapolated into a false
+red. A window with no reset time falls back to the old percent pressure (green below 50, yellow
+50–79, red from 80). The footer `/usage` segment (`extensions/usage`) uses the same colors.
+
+### Expanded view
+
+`/cockpit expanded` (or `cockpit.mode: "expanded"`) grows the docked panel in place; running it
+again returns to `full`, and `/cockpit collapse` (an alias for `compact`) jumps straight to the
+one-line strip. It adds the context window and injector ceilings under `CONTEXT`,
+exact local reset dates (`resets Mon 16 Nov 00:00`) instead of `2d`, each HUD card's sections (the
+jev feed's verdict, answers and state) or its raw `detail` when it wrote no sections, and 12
+recent decisions instead of 5. A card with sections shows them instead of repeating its summary
+lines.
+
+The panel may grow past `cockpit.maxRows`, but only to its share of the screen: about 45% of the
+terminal height (`expandedRowBudget`, minimum `maxRows`, so a 40-row terminal gets 18 body rows).
+The transcript keeps the rest. The budget counts **wrapped** physical rows, so one long section
+line cannot silently double the height; when it runs out the last row is
+`+N more · /hud <source> for all`, and `/hud <source>` opens the scrollable overlay with the rest.
 
 ## Docking, not floating
 
@@ -101,6 +134,8 @@ no widget is installed. A missing config file falls back to defaults.
 
 - At session start the cockpit appears docked above the editor without covering the transcript.
 - `/cockpit` hides it, and `/cockpit` again restores it.
+- `/cockpit expanded` shows the context breakdown, exact reset dates and the jev card's sections; `/cockpit expanded` again collapses to full.
+- A window that will not hit its limit before the reset is green even above 50%; one that will hit it long before the reset is red even below 50%.
 - Below 60 columns the cockpit collapses to a single summary line.
 - Provider usage windows fill in while opencode-go is the active model.
 - With `cockpit.enabled: false`, nothing is docked.

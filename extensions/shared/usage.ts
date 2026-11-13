@@ -1,3 +1,5 @@
+import { windowColor } from "./usage-pace.ts";
+
 /** One provider quota window (rolling / weekly / monthly). */
 export interface UsageWindow {
   label: string;
@@ -22,14 +24,27 @@ export interface ProviderUsage {
   error?: string;
 }
 
-/** Render a `ProviderUsage` as a single compact status segment. */
-export function formatUsage(usage: ProviderUsage): string {
+/** The slice of a theme that `formatUsage` colors with; Pi's `Theme` fits structurally. */
+export interface UsageTheme {
+  fg(color: "success" | "warning" | "error" | "dim", text: string): string;
+}
+
+/**
+ * Render a `ProviderUsage` as a single compact status segment.
+ *
+ * With a theme each window's percentage is colored by its pace (see
+ * `usage-pace.ts`), falling back to percent pressure when the provider reports
+ * no reset time. Without one the text is plain, which keeps the Cloudflare
+ * segment and the tests unchanged.
+ */
+export function formatUsage(usage: ProviderUsage, theme?: UsageTheme, now: number = Date.now()): string {
   if (usage.error) return `${usage.provider}: ${usage.error}`;
 
   const parts: string[] = [];
   for (const window of usage.windows) {
     const percent = window.percent === null ? "n/a" : `${Math.round(window.percent)}%`;
-    parts.push(`${window.label} ${percent}`);
+    const shown = theme ? theme.fg(windowColor(window, now), percent) : percent;
+    parts.push(`${window.label} ${shown}`);
   }
   if (usage.tokensToday) {
     parts.push(`${usage.tokensToday.input} in / ${usage.tokensToday.output} out`);

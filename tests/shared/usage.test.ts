@@ -42,3 +42,32 @@ describe("formatUsage", () => {
     expect(formatUsage({ provider: "opencode-go", windows: [] })).toBe("opencode-go: no data");
   });
 });
+
+describe("formatUsage theme colors", () => {
+  const tagged = { fg: (color: "success" | "warning" | "error" | "dim", text: string) => `<${color}:${text}>` };
+  const now = Date.parse("2026-11-13T12:00:00.000Z");
+  const rolling = (percent: number, resetsAt?: string) => ({ label: "rolling", percent, ...(resetsAt ? { resetsAt } : {}) });
+  const inMinutes = (minutes: number): string => new Date(now + minutes * 60_000).toISOString();
+
+  test("colors each window by its pace", () => {
+    const usage = {
+      provider: "opencode-go",
+      windows: [
+        // 40% over 2h of 5h: the limit is not reached before the reset.
+        rolling(40, inMinutes(180)),
+        // 60% with the same 2h elapsed: the limit lands ~50 minutes early.
+        rolling(60, inMinutes(180)),
+      ],
+    };
+    expect(formatUsage(usage, tagged, now)).toContain("<success:40%>");
+    expect(formatUsage(usage, tagged, now)).toContain("<error:60%>");
+  });
+
+  test("falls back to pressure colors when a window has no reset", () => {
+    expect(formatUsage({ provider: "x", windows: [rolling(80)] }, tagged, now)).toContain("<error:80%>");
+  });
+
+  test("stays plain without a theme", () => {
+    expect(formatUsage({ provider: "x", windows: [rolling(40, inMinutes(180))] }, undefined, now)).toBe("x: rolling 40%");
+  });
+});

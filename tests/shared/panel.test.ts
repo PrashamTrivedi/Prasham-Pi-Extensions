@@ -94,3 +94,18 @@ describe("panelInnerWidth", () => {
     expect(panelInnerWidth(1)).toBe(1);
   });
 });
+
+describe("meter color override", () => {
+  const tagged = { fg: (color: string, text: string) => `<${color}:${text}>`, bg: (_color: string, text: string) => text };
+
+  test("paints the fill and percentage with the given color", () => {
+    const out = meter(tagged as never, 62, 10, "success");
+    expect(out.startsWith("<success:")).toBe(true);
+    expect(out).toContain("<success:62%>");
+  });
+
+  test("keeps the pressure palette without a color", () => {
+    expect(meter(tagged as never, 62, 10)).toContain("<warning:");
+    expect(meter(tagged as never, 62, 10)).toContain("<muted:62%>");
+  });
+});
