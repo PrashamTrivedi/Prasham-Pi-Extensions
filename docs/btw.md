@@ -1,9 +1,12 @@
 # BTW
 
-A main-chat-only side chat. `/btw` opens a full-window conversation that answers
+A main-chat-only side chat. `/btw` opens a side-chat overlay that answers
 questions from **the current chat transcript alone** and leaves the main session
 untouched. When you want, it stages a compact summary in the editor for your next
 main-chat message.
+
+On a wide terminal it is a panel docked to the right, so the main chat stays
+visible; on a narrow one it becomes a centered full-width overlay.
 
 BTW is for “by the way” questions — “what did we decide?”, “where is that
 function?”, “what is still unverified?” — without derailing the main agent,
@@ -24,8 +27,29 @@ Inside the window:
 | --- | --- |
 | `Enter` | Ask the current question. |
 | `Alt+S` | Stage a compact summary in the editor and close. |
-| `PageUp` / `PageDown` | Scroll the side chat. New answers follow the end unless you scrolled up. |
+| `PageUp` / `PageDown` | Scroll the side chat by a page. The footer shows the visible range while there is scrollback. |
+| Mouse wheel | Scroll the side chat. New answers follow the end unless you scrolled up. |
 | `Esc` | Close the window. An in-flight answer is cancelled. |
+
+Both views are overlays, so these keys and the wheel always scroll the side chat,
+never the main transcript behind it.
+
+## Rendering
+
+Messages render exactly like main-chat messages, through Pi's own Markdown
+component:
+
+- headings, bold/italic, lists, block quotes, links, and code fences with syntax
+  highlighting, all with the active theme's markdown tokens (`mdHeading`,
+  `mdCode`, `mdListBullet`, …),
+- questions in the main chat's user-message background block
+  (`userMessageBg` / `userMessageText`) with the same padding,
+- answers on the panel background with a leading spacer, like assistant text in
+  the chat,
+- the streaming caret stays at the end of the newest answer.
+
+Finished messages are cached per theme and width, so streaming an answer only
+re-parses the message that is still changing.
 
 ## What BTW can read
 
@@ -118,10 +142,10 @@ notifies instead of opening a window.
 
 ## Fabric coordination
 
-Fabric’s agent rows are a widget beside Pi’s interactive area, so they would clip a
-full-window screen. BTW takes the shared full-screen lock and hides the
-`pi-fabric-agents` widget while it is open. Fabric’s next refresh restores the rows
-after the window closes.
+Fabric’s agent rows are a widget beside Pi’s interactive area. Both BTW views are
+overlays composited above that area, so BTW no longer takes the shared full-screen
+lock or hides the `pi-fabric-agents` widget: the rows stay where they are and the
+overlay simply covers the space it uses.
 
 ## Troubleshooting
 
@@ -134,5 +158,6 @@ after the window closes.
   newest blocks were sent. Close and reopen BTW if the main chat has advanced.
 - **“BTW needs at least one message”** — the active branch has no user/assistant
   conversation yet.
-- **The window is clipped** — another extension is holding the full-screen lock or
-  a widget is still visible. Reload Pi and reopen `/btw`.
+- **Page scrolling moved the chat behind BTW** — that was the old narrow-terminal
+  full-window view, which Pi’s fullscreen viewport could scroll. BTW uses an
+  overlay for every width now; reload Pi if you still see it.

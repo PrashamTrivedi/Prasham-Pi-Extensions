@@ -1,6 +1,6 @@
 /**
- * The BTW full-window component. Rendering lives in `view.ts`; this file owns the
- * editor, keys, height fitting, and asking the controller for a new answer.
+ * The BTW side-chat overlay component. Rendering lives in `view.ts`; this file owns
+ * the editor, keys, height fitting, and asking the controller for a new answer.
  */
 import {
   Editor,
@@ -10,9 +10,10 @@ import {
   type EditorTheme,
   type Focusable,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { windowHeight } from "../shared/full-screen.ts";
-import { panelHeight } from "./layout.ts";
+import { narrowHeight, panelHeight } from "./layout.ts";
 import type { BtwSideMessage } from "./prompt.ts";
 import { renderBtwPanel, renderBtwView, type BtwTheme } from "./view.ts";
 
@@ -44,9 +45,9 @@ export interface BtwScreenOptions {
   onAsk: (question: string) => void;
   onSummary: () => void;
   onClose: () => void;
-  /** Full-window fallback or the docked side panel. Default: full. */
+  /** Full-width narrow overlay or the docked side panel. Default: full. */
   mode?: "full" | "panel";
-  /** Rows to render. Defaults to `windowHeight` (full) or `panelHeight` (panel). */
+  /** Rows to render. Defaults to `narrowHeight` (full) or `panelHeight` (panel). */
   height?: (rows: number) => number;
   /** Test seam; production creates a Pi `Editor`. */
   editor?: BtwEditor;
@@ -55,6 +56,11 @@ export interface BtwScreenOptions {
 }
 
 export class BtwScreen implements Component, Focusable {
+  /**
+   * The fullscreen viewport must never take PageUp/PageDown or the wheel for the
+   * main chat while this screen is focused; they belong to the side chat.
+   */
+  readonly capturesViewportInput = true;
   private readonly tui: TUI;
   private readonly theme: BtwTheme;
   private readonly state: BtwScreenState;
@@ -78,7 +84,7 @@ export class BtwScreen implements Component, Focusable {
     this.onSummary = options.onSummary;
     this.onClose = options.onClose;
     this.mode = options.mode ?? "full";
-    this.heightOf = options.height ?? (this.mode === "panel" ? panelHeight : windowHeight);
+    this.heightOf = options.height ?? (this.mode === "panel" ? panelHeight : narrowHeight);
     this.maxInputRows = Math.max(1, options.maxInputRows ?? 5);
     this.editor = options.editor ?? new Editor(this.tui, editorTheme(options.theme), { paddingX: 1 });
     this.editor.onSubmit = (value) => this.submit(value);
@@ -118,6 +124,19 @@ export class BtwScreen implements Component, Focusable {
     this.tui.requestRender();
   }
 
+  /**
+   * Scroll the transcript by `lines` (positive scrolls towards newer rows).
+   * Pauses following until the bottom is reached again.
+   */
+  private scrollBy(lines: number): void {
+    const max = this.lastMaxOffset;
+    const from = this.follow ? max : this.offset;
+    const next = Math.min(max, Math.max(0, from + lines));
+    this.offset = next;
+    this.follow = next >= max;
+    this.tui.requestRender();
+  }
+
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
       this.onClose();
@@ -133,19 +152,26 @@ export class BtwScreen implements Component, Focusable {
       return;
     }
     if (matchesKey(data, Key.pageUp)) {
-      this.follow = false;
-      this.offset = Math.max(0, this.offset - Math.max(1, this.lastBodyRows - 2));
-      this.tui.requestRender();
+      this.scrollBy(-Math.max(1, this.lastBodyRows - 2));
       return;
     }
     if (matchesKey(data, Key.pageDown)) {
-      this.offset = Math.min(this.lastMaxOffset, this.offset + Math.max(1, this.lastBodyRows - 2));
-      this.follow = this.offset >= this.lastMaxOffset;
-      this.tui.requestRender();
+      this.scrollBy(Math.max(1, this.lastBodyRows - 2));
       return;
     }
     this.editor.handleInput(data);
     this.tui.requestRender();
+  }
+
+  /**
+   * The overlay swallows wheel events that hit it, so without this handler a wheel
+   * over the panel does nothing at all. Consume it and scroll the transcript.
+   */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "wheel") return undefined;
+    const delta = event.wheelDelta ?? 0;
+    if (delta !== 0) this.scrollBy(delta);
+    return { handled: true, focus: true };
   }
 
   render(width: number): string[] {

@@ -9,9 +9,8 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { FABRIC_AGENTS_WIDGET, beginFullScreen, endFullScreen } from "../shared/full-screen.ts";
 import { accumulateNested, nestedHeaders, type NestedUsage } from "../shared/nested.ts";
-import { BTW_OVERLAY_OPTIONS, btwMode, panelHeight, terminalColumns, terminalRows } from "./layout.ts";
+import { btwMode, btwOverlayOptions, terminalColumns, terminalRows } from "./layout.ts";
 import { modelLabel, outputLimit, resolveBtwModels, type BtwModelResolution } from "./model.ts";
 import {
   buildBtwQuestion,
@@ -286,17 +285,13 @@ async function openBtw(ctx: ExtensionContext, initial?: string): Promise<void> {
   };
 
   const mode = btwMode(terminalColumns(process.stdout.columns), terminalRows(process.stdout.rows));
-  const overlay = mode === "panel";
-  if (!overlay) beginFullScreen();
   try {
-    if (!overlay) ctx.ui.setWidget(FABRIC_AGENTS_WIDGET, undefined);
     await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
       screen = new BtwScreen({
         tui,
         theme,
         state,
         mode,
-        ...(overlay ? { height: panelHeight } : {}),
         onAsk: ask,
         onSummary: () => {
           outcome.value = "summary";
@@ -312,7 +307,7 @@ async function openBtw(ctx: ExtensionContext, initial?: string): Promise<void> {
       });
       if (initial?.trim()) queueMicrotask(() => ask(initial.trim()));
       return screen;
-    }, overlay ? { overlay: true, overlayOptions: { ...BTW_OVERLAY_OPTIONS } } : undefined);
+    }, { overlay: true, overlayOptions: btwOverlayOptions(mode) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     notify(ctx, `BTW could not open: ${message}`, "error");
@@ -320,7 +315,6 @@ async function openBtw(ctx: ExtensionContext, initial?: string): Promise<void> {
     closed = true;
     abort?.abort();
     screen = undefined;
-    if (!overlay) endFullScreen();
   }
 
   if (outcome.value === "summary") {
@@ -363,7 +357,7 @@ export default function btw(pi: ExtensionAPI) {
     pending = undefined;
   });
   pi.registerCommand("btw", {
-    description: "Ask a side question about this chat in a full-window side chat; summary can be staged in the editor",
+    description: "Ask a side question about this chat in a side chat panel; summary can be staged in the editor",
     handler: async (args, ctx) => {
       await runBtw(args, ctx);
     },

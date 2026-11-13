@@ -32,9 +32,77 @@ describe("renderBtwView", () => {
     expect(result.lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
     expect(result.lines[0]).toContain("◆ BTW · side chat");
     expect(result.lines[0]).toContain("opencode-go/beam-free");
-    expect(result.lines.join("\n")).toContain("You");
-    expect(result.lines.join("\n")).toContain("BTW");
+    expect(result.lines.join("\n")).toContain("What changed in the parser?");
+    expect(result.lines.join("\n")).toContain("It now skips thinking blocks");
     expect(result.lines.join("\n")).toContain("alt+s summary");
+  });
+
+  test("renders message bodies as markdown like the main chat", () => {
+    const result = renderBtwView(
+      input({
+        messages: [
+          { role: "user", text: "## What changed?\n\nA **bold** question with `code`." },
+          { role: "assistant", text: "## Answer\n\n- one\n- two\n\n```ts\nconst x = 1;\n```" },
+        ],
+      }),
+      theme,
+      80,
+      30,
+    );
+    // Another test file may have initialized Pi's theme, so code blocks can carry
+    // syntax-highlight colors; compare on plain text.
+    const text = result.lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toContain("What changed?");
+    expect(text).not.toContain("## What changed?");
+    expect(text).toContain("bold");
+    expect(text).not.toContain("**bold**");
+    expect(text).toContain("Answer");
+    expect(text).not.toContain("## Answer");
+    expect(text).toContain("- one");
+    expect(text).toContain("const x = 1;");
+  });
+
+  test("reuses a finished message's render and follows edits", () => {
+    const calls: string[] = [];
+    const recording: BtwTheme = {
+      fg: (color, value) => {
+        if (color.startsWith("md")) calls.push(color);
+        return value;
+      },
+      bg: (_color, value) => value,
+      bold: (text) => text,
+    };
+    const messages: BtwSideMessage[] = [{ role: "assistant", text: "## First" }];
+    renderBtwView(input({ messages }), recording, 60, 20);
+    const afterFirst = calls.length;
+    renderBtwView(input({ messages }), recording, 60, 20);
+    expect(calls.length).toBe(afterFirst);
+    const edited = renderBtwView(input({ messages: [{ role: "assistant", text: "## Second" }] }), recording, 60, 20);
+    expect(edited.lines.join("\n")).toContain("Second");
+  });
+
+  test("paints user messages with the main chat's message colors", () => {
+    const calls: string[] = [];
+    const recording: BtwTheme = {
+      fg: (color, value) => {
+        calls.push(`fg:${color}`);
+        return value;
+      },
+      bg: (color, value) => {
+        calls.push(`bg:${color}`);
+        return value;
+      },
+      bold: (text) => text,
+    };
+    renderBtwView(
+      input({ messages: [{ role: "user", text: "plain question" }, { role: "assistant", text: "# Heading" }] }),
+      recording,
+      60,
+      20,
+    );
+    expect(calls).toContain("bg:userMessageBg");
+    expect(calls).toContain("fg:userMessageText");
+    expect(calls).toContain("fg:mdHeading");
   });
 
   test("shows the side-chat prompt when empty", () => {
@@ -109,7 +177,7 @@ describe("renderBtwPanel", () => {
     expect(text).toContain("╰");
     expect(text).toContain("◆ BTW · side chat");
     expect(text).toContain("opencode-go/beam-free");
-    expect(text).toContain("You");
+    expect(text).toContain("What changed in the parser?");
     expect(text).toContain("alt+s summary");
   });
 
@@ -127,6 +195,8 @@ describe("renderBtwPanel", () => {
     expect(top.maxOffset).toBeGreaterThan(0);
     expect(top.lines.join("\n")).toContain("message 0");
     expect(top.lines.join("\n")).toContain("> still here");
+    // The footer always shows the visible range, so scrolling is visibly working.
+    expect(top.lines.join("\n")).toMatch(/1-\d+\/\d+/);
     const bottom = renderBtwPanel(
       input({ messages: many, inputLines: [" > still here"], offset: top.maxOffset }),
       theme,
@@ -135,6 +205,7 @@ describe("renderBtwPanel", () => {
     );
     expect(bottom.lines.join("\n")).toContain("message 19");
     expect(bottom.lines.join("\n")).toContain("> still here");
+    expect(bottom.lines.join("\n")).not.toContain(" 1-");
   });
 
   test("shows the streaming caret and a notice in the footer", () => {

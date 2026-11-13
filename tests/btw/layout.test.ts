@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  BTW_NARROW_OVERLAY_OPTIONS,
   BTW_OVERLAY_MIN_COLUMNS,
   BTW_OVERLAY_OPTIONS,
   BTW_OVERLAY_WIDTH,
   btwMode,
+  btwOverlayOptions,
+  narrowHeight,
   panelHeight,
   terminalColumns,
   terminalRows,
@@ -30,6 +33,17 @@ describe("overlay geometry", () => {
       margin: 1,
     });
   });
+
+  test("stays an overlay on narrow terminals", () => {
+    expect(BTW_NARROW_OVERLAY_OPTIONS).toEqual({
+      anchor: "center",
+      width: "100%",
+      maxHeight: "90%",
+      margin: 0,
+    });
+    expect(btwOverlayOptions("panel")).toBe(BTW_OVERLAY_OPTIONS);
+    expect(btwOverlayOptions("full")).toBe(BTW_NARROW_OVERLAY_OPTIONS);
+  });
 });
 
 describe("terminal size helpers", () => {
@@ -49,5 +63,15 @@ describe("panelHeight", () => {
     expect(panelHeight(20)).toBe(14);
     expect(panelHeight(10)).toBe(8);
     expect(panelHeight(12)).toBe(8);
+  });
+});
+
+describe("narrowHeight", () => {
+  test("stays under the narrow overlay's 90% maxHeight", () => {
+    expect(narrowHeight(50)).toBe(43);
+    expect(narrowHeight(24)).toBe(19);
+    expect(narrowHeight(10)).toBe(8);
+    expect(narrowHeight(9)).toBe(7);
+    expect(narrowHeight(0)).toBe(19);
   });
 });

@@ -108,11 +108,11 @@ describe("BtwScreen", () => {
     expect(closes()).toBe(1);
   });
 
-  test("renders the full window height and forwards editor lines", () => {
+  test("renders the narrow overlay height and forwards editor lines", () => {
     const { screen, editor } = harness();
     editor.text = "typed question";
     const lines = screen.render(80);
-    expect(lines.length).toBe(27);
+    expect(lines.length).toBe(25);
     expect(editor.lastWidth).toBe(80);
     expect(lines.join("\n")).toContain("typed question");
   });
@@ -162,5 +162,43 @@ describe("BtwScreen", () => {
     expect(up.follow).toBe(false);
     screen.handleInput("\x1b[6~");
     expect(screen.getState().offset).toBeGreaterThan(up.offset);
+  });
+
+  test("claims viewport input so the main chat cannot steal page scroll", () => {
+    const { screen } = harness();
+    expect(screen.capturesViewportInput).toBe(true);
+  });
+
+  test("the mouse wheel scrolls the transcript and resumes following at the bottom", () => {
+    const many = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      text: `message ${index} `.repeat(12),
+    }));
+    const { screen } = harness({ messages: many });
+    screen.render(80);
+    const bottom = screen.getState();
+    const wheel = (wheelDelta: number) => ({
+      type: "wheel" as const,
+      button: "none" as const,
+      x: 1,
+      y: 1,
+      screenX: 1,
+      screenY: 1,
+      width: 60,
+      height: 24,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      wheelDelta,
+    });
+    expect(screen.handleMouse(wheel(-3))).toEqual({ handled: true, focus: true });
+    const up = screen.getState();
+    expect(up.offset).toBe(bottom.maxOffset - 3);
+    expect(up.follow).toBe(false);
+    screen.handleMouse(wheel(100));
+    const end = screen.getState();
+    expect(end.offset).toBe(bottom.maxOffset);
+    expect(end.follow).toBe(true);
+    expect(screen.handleMouse({ ...wheel(0), type: "click" })).toBeUndefined();
   });
 });
