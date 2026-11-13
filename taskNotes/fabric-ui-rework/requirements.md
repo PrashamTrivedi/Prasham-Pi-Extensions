@@ -91,3 +91,22 @@ These are assumed; they are not blockers, and any of them can be reversed cheapl
 - The main agent uses the theme accent color rather than a generated color, so children are the
   colorful ones.
 - Cancelling from `/agents` asks for confirmation before it kills a subtree.
+
+## Superseded 2026-11-05
+
+These non-goals no longer describe the platform; the later work items changed them.
+
+- **"No vertical side pane … nothing that reserves a persistent column beside the chat"** — Pi's
+  overlay API now supports `nonCapturing`, so a right-docked panel can coexist with the editor.
+  BTW uses it (`extensions/btw/layout.ts`, `overlayOptions.nonCapturing`), and Fabric's peek panel
+  (`extensions/fabric/peek.ts`, `peekPanel` in the Fabric config, `ctrl+alt+f`) is the same pattern
+  showing a live agent tail.
+- **"No agent timeline, cost dashboard, transcript search, or export"** — all four now exist:
+  per-agent cost/tokens/last tool folded from the child session (`extensions/fabric/usage.ts`),
+  `/` search with `n`/`N` in a transcript, `t`/`r`/`e` reading filters, and `o` (Markdown export
+  opened in the editor) plus `y` (raw session path).
+- **"The `spawn_agents` and `await_agents` result cards in the chat stay exactly as they are"** —
+  they are one line per run by default and expand with `ctrl+o`; the placeholder "Evidence" card is
+  gone.
+- The row stack is no longer capped at six lines once more than three agents are live: it collapses
+  to `◆ fabric 3● 1◌ 2✓ 1× · /agents` with one line per failure.

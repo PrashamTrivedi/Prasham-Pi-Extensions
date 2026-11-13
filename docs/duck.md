@@ -1,58 +1,54 @@
 # Duck
 
-A questions-only second opinion on the current plan, via an in-process nested model call
-(`ctx.modelRegistry.streamSimple`). No subprocess, no provider API call from the extension.
+A questions-only second opinion on the current plan: an in-process nested model call
+(`ctx.modelRegistry.streamSimple`) generates the questions, and the shared `AskUserQuestion`
+tool presents them. No subprocess, no provider API call from the extension, no docked panel.
 
-## Commands
+## Tool
 
-| Command | Purpose |
+| Tool | Purpose |
 | --- | --- |
-| `/duck [focus]` | Ask for questions. With no focus, runs against the latest assistant message; run again to close. |
-| `/duck answer` | Open the questionnaire for the questions the model returned, and write the answers into the editor. |
-| `/duck close` | Dismiss the docked panel. |
+| `duck` | Generates 1–4 clarifying questions about the latest assistant plan (or a `focus`) and asks them through `AskUserQuestion`. The answers come back in Duck's own tool result, straight to the chat. |
 
-## How it works
+The model is instructed with `extensions/duck/prompt.ts`:
 
-1. The latest assistant text on the branch is used as the plan.
-2. The model is asked to return **only** a JSON array:
+1. The latest assistant text on the branch is used as the plan (or `focus`, when given).
+2. The model returns **only** a JSON array:
    `[{ "header", "question", "options": [{ "label", "description" }], "allowOther" }]`.
 3. The answer is parsed once, on completion. Markdown fences and surrounding prose are
    tolerated; each `[` is tried in turn. Headers are truncated to 12 characters, questions
    are capped at 4, and options at 4. A question with no usable options still works via
    "Type something.".
-4. If nothing parses, the raw text is shown instead (capped at 5 question lines).
+4. If nothing parses, the raw text becomes one open-ended question.
 
-The result is rendered as a **docked widget above the editor** — it reserves layout space and
-does not cover the transcript. Widgets take no keyboard input, so the interaction lives in
-commands rather than keystrokes.
+## Answering
 
-## Answering (Claude-style)
-
-`/duck answer` opens the shared questionnaire (`extensions/shared/questionnaire.ts`), which
-mirrors Claude Code's AskUserQuestion: one tab per question with an answered indicator, an
-arrow-key option list with descriptions, a "Type something." inline editor, and a Submit tab
-that refuses until every question is answered.
-
-On submit, the chosen answers are composed into a markdown block and written into the editor
-via `ctx.ui.setEditorText`. **They are not auto-sent** — you review and send them yourself.
-Any draft already in the editor is preserved; the block is appended.
+Questions go through `ctx.executeTool("AskUserQuestion", …)` — Pi's structured-question
+surface (see `extensions/shared/ask.ts`), so the same keyboard flow serves Duck, the agent, and
+any other caller. Answers are returned in Duck's tool result; nothing is written to the editor
+and nothing is auto-sent.
 
 ## Files
 
-- `extensions/duck/index.ts` — commands, nested call, docked panel.
+- `extensions/duck/index.ts` — the tool, the nested call, and the AskUserQuestion hand-off.
 - `extensions/duck/prompt.ts` — the JSON-only prompt.
 - `extensions/duck/questions.ts` — tolerant parse and clamping.
-- `extensions/duck/answers.ts` — questionnaire mapping and the editor block.
-- `extensions/shared/questionnaire.ts` — the reusable AskUserQuestion modal.
+- `extensions/duck/answers.ts` — mapping into the AskUserQuestion question shape.
+- `extensions/shared/ask.ts` — the shared structured-question tool.
+- `extensions/shared/nested.ts` — nested stream accumulation and headers.
 
 ## Manual checks (TUI)
 
-UI rendering is verified by hand rather than by unit tests:
+- Calling `duck` on a plan asks 1–4 questions through the standard AskUserQuestion UI.
+- The tool result contains the questions and the human's answers.
+- A model that returns prose instead of JSON still produces one answerable question.
+- A model error is reported as an error result, not a thrown exception.
 
-- `/duck <focus>` shows a docked panel above the editor that does **not** cover transcript lines.
-- The spinner animates while the model answers, then the questions replace it.
-- `/duck answer` opens the tabbed questionnaire; Submit fixes the answers in place.
-- On Submit, the composed block is appended to the editor, and an existing draft is preserved.
-- `/duck answer` with no structured questions notifies instead of opening a modal.
-- `/duck` toggles the panel closed; `/duck close` closes it directly.
-- Regular and fullscreen modes both render; `print` mode installs no widget and does not throw.
+## Known limits
+
+- The reviewer sees only the latest assistant text; it does not read files, the diff, or tool
+  results, so its questions can be generic.
+- It uses the active model unless `ctx.modelRegistry` resolves otherwise; there is no cheap-model
+  routing.
+- A rework of Duck's purpose and surface is an open brainstorm (see
+  `taskNotes/duck-rework/brainstorm.md`).

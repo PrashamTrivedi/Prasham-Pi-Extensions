@@ -3,13 +3,17 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildCockpitSections,
   formatReset,
+  renderCockpitCompact,
   renderCockpitPanel,
   renderCockpitWidget,
   type CockpitInput,
 } from "../../extensions/workbench/cockpit.ts";
+import type { HudCard } from "../../extensions/workbench/hud-logic.ts";
 import type { PanelTheme } from "../../extensions/shared/panel.ts";
 
 const plain: PanelTheme = { fg: (_color, text) => text, bg: (_color, text) => text };
+
+const tagged: PanelTheme = { fg: (color, text) => `<${color}:${text}>`, bg: (_color, text) => text };
 
 const populated: CockpitInput = {
   percent: 62,
@@ -154,5 +158,64 @@ describe("formatReset", () => {
   test("returns undefined for absent or invalid input", () => {
     expect(formatReset(undefined, now)).toBeUndefined();
     expect(formatReset("not-a-date", now)).toBeUndefined();
+  });
+
+  test("compact mode is a colored usage line with no tokens or decision text", () => {
+    const lines = renderCockpitWidget(plain, 120, populated, Date.now(), { mode: "compact", maxRows: 8 });
+    expect(lines).toEqual(["◈ ctx 62% · rolling 2% · weekly 10% · monthly 0%"]);
+  });
+
+  test("compact usage percentages are colored by threshold, labels muted", () => {
+    const input: CockpitInput = {
+      ...populated,
+      percent: 49,
+      usage: { provider: "p", windows: [{ label: "a", percent: 50 }, { label: "b", percent: 79 }, { label: "c", percent: 80 }] },
+    };
+    const line = renderCockpitCompact(tagged, 400, input)[0]!;
+    expect(line).toContain("<muted:ctx> <success:49%>");
+    expect(line).toContain("<muted:a> <warning:50%>");
+    expect(line).toContain("<muted:b> <warning:79%>");
+    expect(line).toContain("<muted:c> <error:80%>");
+  });
+
+  test("compact shows only ctx without usage, and a dim usage ? on error", () => {
+    expect(renderCockpitCompact(plain, 120, { percent: 10, tokens: 0, decisions: [] })).toEqual(["◈ ctx 10%"]);
+    const err = renderCockpitCompact(tagged, 400, { percent: 10, tokens: 0, decisions: [], usage: { provider: "p", windows: [], error: "x" } });
+    expect(err[0]).toContain("<dim:usage ?>");
+  });
+
+  test("compact lists at most 2 HUD cards, newest first, errors first on ties", () => {
+    const card = (source: string, status: HudCard["status"], updatedAt: number, lines: string[] = []): HudCard => ({
+      source, title: `T-${source}`, status, progress: null, lines, updatedAt, ttlSec: 900, detail: [], sections: [],
+    });
+    const hud = { at: 100_000, stale: 0, cards: [card("old", "ok", 1000), card("tie-ok", "ok", 90_000), card("tie-err", "error", 90_000, ["boom happened"]), card("new", "running", 95_000)] };
+    const lines = renderCockpitCompact(tagged, 400, { ...populated, hud });
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain("<accent:●> T-new");
+    expect(lines[2]).toContain("<error:✗> T-tie-err");
+    expect(lines[2]).toContain("<muted:boom happened>");
+    expect(lines[2]).toContain("<dim:10s>");
+    expect(lines.join("\n")).not.toContain("T-old");
+    expect(lines.join("\n")).not.toContain("T-tie-ok");
+  });
+
+  test("compact renders only the usage line when there are no cards", () => {
+    expect(renderCockpitCompact(plain, 100, { ...populated, hud: { at: 1, stale: 0, cards: [] } })).toHaveLength(1);
+  });
+
+  test("compact lines never exceed the width", () => {
+    const long: HudCard = { source: "s", title: "x".repeat(80), status: "warn", progress: null, lines: ["y".repeat(200)], updatedAt: 1, ttlSec: 900, detail: [], sections: [] };
+    for (const width of [60, 61, 80, 120]) {
+      for (const line of renderCockpitWidget(plain, width, { ...populated, hud: { at: 2, stale: 0, cards: [long, long] } }, 2, { mode: "compact", maxRows: 8 })) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  test("full mode caps the body at maxRows and says how many rows are hidden", () => {
+    const uncapped = renderCockpitPanel(plain, 100, populated);
+    const capped = renderCockpitWidget(plain, 100, populated, Date.now(), { mode: "full", maxRows: 4 });
+    expect(capped.length).toBeLessThan(uncapped.length);
+    expect(capped.join("\n")).toMatch(/\+\d+ more/);
   });
 });

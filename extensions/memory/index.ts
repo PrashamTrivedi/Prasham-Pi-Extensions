@@ -14,10 +14,12 @@
  * Config (env vars):
  *   PI_MEMORY_ROOT - override the per-project memory base (default: <agent dir>/projects)
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { searchLocal } from "./search.ts";
+import { findServerMemories, memoryServerAuth } from "./server.ts";
 
 export const INDEX_FILE = "MEMORY.md";
 export const INDEX_HEADER = "# Memory Index\n";
@@ -107,6 +109,64 @@ export default function memory(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     cached = null;
     get(ctx.cwd);
+  });
+
+  /**
+   * `/memory` lists the directory; `/memory find <q>` searches the Markdown memory
+   * and the `memory-server` MCP store, because the two know different things and
+   * a miss in one should not hide a hit in the other.
+   */
+  pi.registerCommand("memory", {
+    description: "Show project memory, or find a memory across local files and the memory-server",
+    handler: async (args, ctx) => {
+      const dir = get(ctx.cwd);
+      const [verb = "", ...words] = args.trim().split(/\s+/).filter(Boolean);
+      if (verb !== "find") {
+        let count = 0;
+        try {
+          count = readdirSync(dir).filter((name) => name.endsWith(".md") && name !== INDEX_FILE).length;
+        } catch { /* ensureMemory created the directory, so this is only a permission problem. */ }
+        ctx.ui.notify(`${dir}\n${count} memories · /memory find <query>`, "info");
+        return;
+      }
+      const query = words.join(" ");
+      if (!query) {
+        ctx.ui.notify("Usage: /memory find <query>", "warning");
+        return;
+      }
+      const local = searchLocal(dir, query);
+      // The server half is best-effort: a local hit must still be shown offline.
+      const auth = memoryServerAuth(agentDir());
+      let server: Awaited<ReturnType<typeof findServerMemories>> = [];
+      let note = "";
+      if (!auth) {
+        note = "memory-server not connected (no usable token — open /mcp)";
+      } else {
+        try {
+          server = await findServerMemories(query, { auth });
+        } catch (error) {
+          note = `memory-server: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      const lines = [`**memory find** · ${query} — ${local.length} local, ${server.length} memory-server${note ? ` · ${note}` : ""}`];
+      if (local.length) {
+        lines.push("", "**Local**");
+        for (const hit of local) {
+          lines.push(`- \`${hit.file}\` — ${hit.title}${hit.description ? `: ${hit.description}` : ""}`);
+          if (hit.line) lines.push(`  - ${hit.line}`);
+        }
+      }
+      if (server.length) {
+        lines.push("", "**memory-server**");
+        for (const memory of server) {
+          lines.push(`- **${memory.name}**${memory.tags.length ? ` · ${memory.tags.join(", ")}` : ""}`);
+          const snippet = memory.content.replace(/\s+/g, " ").trim();
+          if (snippet) lines.push(`  - ${snippet.slice(0, 240)}${snippet.length > 240 ? "…" : ""}`);
+        }
+      }
+      if (!local.length && !server.length) lines.push("", "No matches.");
+      pi.sendMessage({ customType: "pi-memory-find", display: true, content: lines.join("\n") }, { triggerTurn: false });
+    },
   });
 
   // Re-injected every run, so the protocol survives compaction and retries.

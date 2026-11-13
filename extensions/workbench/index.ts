@@ -13,6 +13,9 @@ import { registerCockpit } from "./cockpit.ts";
 import { registerMcpRenderer } from "./mcp-renderer.ts";
 import { registerContext } from "./context.ts";
 import { registerReport } from "./report.ts";
+import { registerHud } from "./hud.ts";
+import { registerDeploy } from "./deploy.ts";
+import { registerDecorate } from "./decorate.ts";
 
 function agentDir(): string {
   const fromEnv = process.env.PI_CODING_AGENT_DIR;
@@ -35,6 +38,9 @@ export default function workbench(pi: ExtensionAPI) {
     ["pet", () => registerPet(pi, getConfig)],
     ["statusline", () => registerStatusline(pi, getConfig)],
     ["cockpit", () => registerCockpit(pi, getConfig)],
+    ["hud", () => registerHud(pi, getConfig)],
+    ["deploy", () => registerDeploy(pi, getConfig)],
+    ["decorate", () => registerDecorate(pi, getConfig)],
     [
       "observability",
       () => {

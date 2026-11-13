@@ -63,3 +63,47 @@ export function pickVerb(theme: PetTheme, turn: number): string {
   const index = ((safeTurn % verbs.length) + verbs.length) % verbs.length;
   return verbs[index];
 }
+
+// --- Turn sign-offs (ported from the Claude Code mod; each reads before ` for 2m14s`) -------------
+
+export const SIGN_OFFS: Record<Exclude<PetTheme, "auto">, readonly string[]> = {
+  starwars: [
+    "Trained on Dagobah",
+    "Made the Kessel Run",
+    "Used the Force",
+    "Dodged the TIE fighters",
+    "Restored balance",
+    "Jumped to lightspeed",
+    "Escaped the Death Star",
+  ],
+  marvel: ["Assembled", "Suited up", "Went quantum", "Wielded Mjolnir", "Snapped back", "Opened the portal", "Held the line"],
+  barca: [
+    "Played tiki-taka",
+    "Pressed high",
+    "Threaded the through-ball",
+    "Rondo'd in midfield",
+    "Played La Masia style",
+    "Won the midfield",
+    "Triangulated the play",
+  ],
+};
+
+export const FALLBACK_SIGN_OFF = "Pip finished";
+
+/** The theme a sampled verb belongs to, or null for an unknown or empty verb. */
+export function themeOf(verb: string): Exclude<PetTheme, "auto"> | null {
+  for (const theme of ["starwars", "marvel", "barca"] as const) {
+    if (THEMED_VERBS[theme].includes(verb)) return theme;
+  }
+  return null;
+}
+
+/** A sign-off for the verb's theme that is not `last` when another exists. `rng` is injectable. */
+export function signOffFor(verb: string, last = "", rng: () => number = Math.random): string {
+  const theme = themeOf(verb);
+  if (theme === null) return FALLBACK_SIGN_OFF;
+  const all = SIGN_OFFS[theme];
+  const pool = all.filter((line) => line !== last);
+  const from = pool.length > 0 ? pool : all;
+  return from[Math.floor(rng() * from.length)] ?? FALLBACK_SIGN_OFF;
+}

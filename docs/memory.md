@@ -24,6 +24,22 @@ Each memory file is frontmatter (`name`, `description`, `type`) plus the content
 **Why:** and **How to apply:**. `next_*` is a living handoff — it is updated in place, not
 duplicated per session.
 
+## Searching
+
+```
+/memory              # the directory and how many memories it holds
+/memory find <q>     # local files and the memory-server, in one list
+```
+
+`/memory find` never needs the agent: it reads the Markdown directly, and it also asks the
+`memory-server` MCP store (`find_memories`) with the OAuth token Pi already saved in
+`~/.pi/agent/mcp-auth.json`. Extensions cannot call MCP tools — only a tool's `execute()` gets
+`ctx.executeTool()` — so the command speaks the same JSON-RPC `tools/call` the client would.
+Results are printed as one `pi-memory-find` message: local hits first (name, then description, then
+a body excerpt) and then the server's rows with their tags. The server half is best-effort: an
+expired token or an outage prints a note and the local hits still appear. Nothing is written, and
+the token is never refreshed — reconnect with `/mcp` when it expires.
+
 ## When it activates
 
 | Hook | What happens |

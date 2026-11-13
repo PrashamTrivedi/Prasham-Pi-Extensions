@@ -62,28 +62,48 @@ export function isLocalUrl(url: string): boolean {
 
 let starting: Promise<void> | undefined;
 
+/**
+ * A dead or hung server is restarted at most once per cooldown. Without this, a
+ * zombie holding the port turns every failed poll (the cockpit polls each turn and
+ * each tool result) into another doomed `bun run ledger-server.ts`.
+ */
+export const LEDGER_RESTART_COOLDOWN_MS = 15_000;
+let lastStartAttempt = 0;
+
+/** True when enough time has passed since the last start attempt. */
+export function restartAllowed(lastAttempt: number, now: number, cooldown = LEDGER_RESTART_COOLDOWN_MS): boolean {
+  return lastAttempt === 0 || now - lastAttempt >= cooldown;
+}
+
+/** Test-only: forget the cooldown and any in-flight start. */
+export function resetRestartState(): void {
+  lastStartAttempt = 0;
+  starting = undefined;
+}
+
 function serverUp(url: string): Promise<boolean> {
   return fetch(`${url}/decision-counts`, { signal: AbortSignal.timeout(400) })
     .then((response) => response.ok)
     .catch(() => false);
 }
 
-/** Start the local Bun server once and wait for it to answer (best effort). */
+/** Start the local Bun server once and wait for it to answer (best effort, cooldown-guarded). */
 function ensureServer(url: string): Promise<void> {
-  if (!starting) {
-    starting = (async () => {
+  if (starting) return starting;
+  if (!restartAllowed(lastStartAttempt, Date.now())) return Promise.resolve();
+  starting = (async () => {
+    if (await serverUp(url)) return;
+    lastStartAttempt = Date.now();
+    const child = spawn("bun", ["run", SERVER_SCRIPT], { detached: true, stdio: "ignore", env: process.env });
+    child.on("error", () => { /* bun missing; the retry reports the original error */ });
+    child.unref();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       if (await serverUp(url)) return;
-      const child = spawn("bun", ["run", SERVER_SCRIPT], { detached: true, stdio: "ignore", env: process.env });
-      child.on("error", () => { /* bun missing; the retry reports the original error */ });
-      child.unref();
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        if (await serverUp(url)) return;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    })().finally(() => {
-      starting = undefined;
-    });
-  }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  })().finally(() => {
+    starting = undefined;
+  });
   return starting;
 }
 
