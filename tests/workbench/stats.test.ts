@@ -3,7 +3,9 @@ import {
   duration,
   formatDuration,
   formatTokens,
+  cwdLabel,
   statusLine,
+  truncateLeft,
   tokenTotals,
 } from "../../extensions/workbench/stats.ts";
 
@@ -46,5 +48,39 @@ describe("stats", () => {
 
   test("statusLine does not fabricate an unknown percent", () => {
     expect(statusLine({ branch: "main", percent: null, durationMs: 0, tokens: 0 })).toContain("ctx ?");
+  });
+});
+
+describe("cwdLabel", () => {
+  test("is home-relative, like Pi's built-in footer", () => {
+    expect(cwdLabel("/home/me/Code/app", "/home/me")).toBe("~/Code/app");
+    expect(cwdLabel("/home/me", "/home/me")).toBe("~");
+  });
+
+  test("keeps absolute paths outside home, and without a home", () => {
+    expect(cwdLabel("/srv/app", "/home/me")).toBe("/srv/app");
+    expect(cwdLabel("/srv/app")).toBe("/srv/app");
+  });
+
+  test("does not treat a sibling prefix as inside home", () => {
+    expect(cwdLabel("/home/melanie/app", "/home/me")).toBe("/home/melanie/app");
+  });
+});
+
+describe("truncateLeft", () => {
+  test("leaves short text alone", () => {
+    expect(truncateLeft("~/Code/app", 20)).toBe("~/Code/app");
+  });
+
+  test("keeps the tail of a long path", () => {
+    const out = truncateLeft("~/Code/Projects/Prasham-Pi-Extensions", 24);
+    expect(out).toHaveLength(24);
+    expect(out.startsWith("…")).toBe(true);
+    expect(out.endsWith("Prasham-Pi-Extensions")).toBe(true);
+  });
+
+  test("degenerates safely at zero and one column", () => {
+    expect(truncateLeft("anything", 0)).toBe("");
+    expect(truncateLeft("anything", 1)).toBe("…");
   });
 });

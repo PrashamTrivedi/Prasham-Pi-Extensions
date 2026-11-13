@@ -3,6 +3,7 @@
  * Pi exposes no pricing table, so the extension displays locally counted tokens
  * instead of fabricating a dollar figure.
  */
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 function number(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -65,4 +66,27 @@ export interface StatusLineInput {
 export function statusLine(input: StatusLineInput): string {
   const context = input.percent === null ? "ctx ?" : `ctx ${Math.round(input.percent)}%`;
   return `${input.branch} · ${context} · ${formatDuration(input.durationMs)} · ${formatTokens(input.tokens)} tok`;
+}
+
+/**
+ * Home-relative working directory for the footer (`~`, `~/Code/x`, or the
+ * absolute path when it is outside home). Mirrors Pi's built-in footer so the
+ * custom footer keeps showing where the session runs.
+ */
+export function cwdLabel(cwd: string, home?: string): string {
+  if (!home) return cwd;
+  const resolvedCwd = resolve(cwd);
+  const resolvedHome = resolve(home);
+  const rel = relative(resolvedHome, resolvedCwd);
+  const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  if (!inside) return cwd;
+  return rel === "" ? "~" : `~${sep}${rel}`;
+}
+
+/** Keep a path's tail when it is wider than `width`; paths are plain text. */
+export function truncateLeft(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (text.length <= width) return text;
+  if (width === 1) return "…";
+  return `…${text.slice(text.length - (width - 1))}`;
 }

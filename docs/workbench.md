@@ -9,7 +9,7 @@ broken feature cannot take the others down, and failures are reported once at se
 | Feature | Flag | What it does |
 | --- | --- | --- |
 | **Pet** | `pet` | Themed animated working indicator, per-run verbs, mood from context fill and recent real tool failures. Sub-flags: `art` (8x4 half-block theme badge below the editor while a run works; Marvel cycles stones), `signOff` (footer line `Pip: Pressed high for 2m14s` using the run's verb), `lines` (short pet lines on every third run when stuffed or sad). `/pet` shows state. |
-| **Statusline** | `statusline` | Two-line footer: branch, context %, duration and cost; then provider usage windows. |
+| **Statusline** | `statusline` | Footer: the working directory (`~`-relative, tail kept when narrow), then branch, context %, duration and locally counted tokens, then provider usage windows. |
 | **Cockpit** | `cockpit` | A panel **docked above the editor** with context, provider usage windows (colored by pace), and recent decisions. `/cockpit expanded` grows it in place. |
 | **HUD** | `hud` | Cards from the shared drop dir `~/.workbench/hud/*.json` (`WORKBENCH_HUD_DIR` overrides), the same files and schema the Claude Code workbench reads, shown in the cockpit. Toasts when a known source moves to ok/warn/error. `/hud`, `/hud <source>`. |
 | **Deploy tracker** | `deploy` | A successful `wrangler deploy` / `versions upload` in bash records worker, commit and time per wrangler root (session state) and publishes HUD card `deploy-<name>` (ttl 1h). Later `git commit/merge/pull/rebase/cherry-pick` update it to "N commits not deployed". |
