@@ -221,7 +221,7 @@ bun run extensions/sanitize-skill-names.ts --apply
 
 ### sandbox-dev
 
-A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `prompts/codePlanner.md`, `prompts/startWork.md`, and `prompts/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
+A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `commands/codePlanner.md`, `commands/startWork.md`, and `commands/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
 
 - **Decision-server gate.** Every `tool_call` is mapped to the neutral jev-harness shape and sent to the decision server; an approval runs it, and a reject, an "ask", or an unreachable server becomes exactly one plain yes/no prompt for the human (fail closed with no UI). This package holds no dangerous-command list and no protected-path list, keeps no approval memory, and blocks nothing on its own — the decision server owns every judgement. `jev-gate` therefore keeps only its result and stop hooks: one gate, one owner, one server call per tool call.
 - **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md` from disk and appends the gate to the chat. It records nothing and classifies nothing; the human's reply in the transcript is the record, and the agent reads it. `r` only shows the plan; `/dev-approve` is an explicit human-only approval. The plan review alongside the digest is an ordinary model task, not a Jev judgment.

@@ -20,5 +20,18 @@ for (const entry of pkg.pi.extensions) {
   assert(/^export\s+default\b/m.test(readFileSync(path, 'utf8')), `Entry has no default export: ${entry}`);
 }
 
+// Prompt templates are the only prompt files Pi can load: the manifest key stays
+// `prompts` even when the files live in `commands/`. `commands` is an alias for a
+// future durable host; Pi ignores unknown `pi` keys. Check both declared
+// directories exist so a folder rename cannot silently drop /codePlanner and friends.
+for (const key of ['prompts', 'commands']) {
+  for (const entry of pkg.pi[key] ?? []) {
+    if (/^[!+-]/.test(entry)) continue;
+    const globAt = entry.search(/[*?[\]{}]/);
+    const base = globAt === -1 ? entry : entry.slice(0, globAt).replace(/\/[^/]*$/, '');
+    assert(existsSync(resolve(root, base)), `Missing ${key} directory for: ${entry}`);
+  }
+}
+
 for (const path of ['README.md', 'docs/preview.html', 'docs/preview.svg', 'SECURITY.md']) assert(existsSync(resolve(root, path)), `Missing ${path}`);
 console.log(`Package manifest and public assets validated (${pkg.pi.extensions.length} extensions).`);

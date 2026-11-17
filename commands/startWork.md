@@ -183,7 +183,7 @@ Example: `git commit -m '✨ feat: Add JWT authentication'`
 
 Once the work is done, typechecked, and tested:
 
-- Autonomous mode: proceed directly to completion (`read prompts/completeWork.md`
+- Autonomous mode: proceed directly to completion (`read commands/completeWork.md`
   and follow it for this task). You may call `dev_outcome_met` only once the
   evidence in the transcript proves the outcome.
 - Interactive mode: ask the user to run `/completeWork <task>`.

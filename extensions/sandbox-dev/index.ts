@@ -149,7 +149,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
       : "";
     return {
       systemPrompt: `${event.systemPrompt}${gate}\n\nsandbox-dev procedure files (absolute paths): ${["codePlanner", "startWork", "completeWork"]
-        .map((name) => join(PACKAGE_ROOT, "prompts", `${name}.md`))
+        .map((name) => join(PACKAGE_ROOT, "commands", `${name}.md`))
         .join(", ")}.`,
     };
   });

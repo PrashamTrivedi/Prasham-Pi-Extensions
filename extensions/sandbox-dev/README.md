@@ -1,7 +1,7 @@
 # sandbox-dev (Pi)
 
 Native Pi port of the ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in
-`skills/sandbox-dev/SKILL.md` and `prompts/*.md`; this extension supplies the executable parts
+`skills/sandbox-dev/SKILL.md` and `commands/*.md`; this extension supplies the executable parts
 markdown cannot.
 
 ## Targets

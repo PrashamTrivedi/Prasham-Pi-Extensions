@@ -34,7 +34,8 @@
       "./extensions/sanitize-skill-names.ts"
     ],
     "skills": ["./skills"],
-    "prompts": ["./prompts/*.md"]
+    "prompts": ["./commands/*.md"],
+    "commands": ["./commands/*.md"]
   },
   "scripts": {
     "test": "bun test tests",

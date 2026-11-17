@@ -152,7 +152,7 @@ export function discoverCommands(root: string): Discovery {
 /** Prompt-template names that already own a `/name`: this package, the agent dir, the project. */
 function reservedPromptNames(cwd: string): string[] {
   const agent = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-  const pkg = join(import.meta.dirname ?? ".", "..", "..", "prompts");
+  const pkg = join(import.meta.dirname ?? ".", "..", "..", "commands");
   const names: string[] = [];
   for (const dir of [pkg, join(agent, "prompts"), join(cwd, ".pi", "prompts")]) {
     try {

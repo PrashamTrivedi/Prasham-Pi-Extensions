@@ -27,7 +27,7 @@ Split the artifacts accordingly:
 | Layer | Pi artifact | Why |
 |---|---|---|
 | Loop narrative, digest format, acceptance checklist | **`skills/sandbox-dev/SKILL.md`** | plain instructions, advertised by name/description |
-| `/codePlanner`, `/startWork`, `/completeWork` text bodies | **`prompts/*.md`** prompt templates | expand to a user message; `$ARGUMENTS` already works |
+| `/codePlanner`, `/startWork`, `/completeWork` text bodies | **`commands/*.md`** prompt templates | expand to a user message; `$ARGUMENTS` already works |
 | The three targets | **`extensions/sandbox-dev/`** | markdown can *ask* the model to stop; only executable hooks can *force* it |
 
 Two facts drive the design:
@@ -275,7 +275,7 @@ sub-agent of the original flow.
 Prasham-Pi-Extensions/
 ├── package.json                     # add the new paths to "pi"
 ├── skills/sandbox-dev/SKILL.md      # the 5-phase loop; no allowed-tools, no /goal, no hud
-├── prompts/                         # text-only compatibility commands
+├── commands/                        # text-only compatibility commands
 │   ├── codePlanner.md
 │   ├── startWork.md
 │   └── completeWork.md
@@ -293,7 +293,7 @@ Prasham-Pi-Extensions/
 "pi": {
   "extensions": ["./extensions/fabric/index.ts", "./extensions/sandbox-dev/index.ts", /* … */],
   "skills": ["./skills"],
-  "prompts": ["./prompts"]
+  "prompts": ["./commands"]
 }
 ```
 
@@ -328,7 +328,7 @@ markdown as the text body and register the extension command only where approval
    continuation, turn budget + stall detection. (Target 3)
 4. Copy `SKILL.md` to `skills/sandbox-dev/`; strip `allowed-tools`, `/goal`, `/sandbox`, `hud`, `@file`,
    `$ARGUMENT`; Phase 0 becomes "read the gate's reported mode".
-5. Add `prompts/{codePlanner,startWork,completeWork}.md` with the §6 fixes.
+5. Add `commands/{codePlanner,startWork,completeWork}.md` with the §6 fixes.
 6. Decide the real-boundary story (container or vendored sandbox extension) and state it in Phase 0.
 
 **P1 — makes it good**
@@ -362,7 +362,7 @@ Implemented in this repo:
 | Artifact | Purpose |
 |---|---|
 | `skills/sandbox-dev/SKILL.md` | The five-phase loop, rewritten for Pi (no `allowed-tools`, no `/goal`, no `hud`, no env probing) |
-| `prompts/{codePlanner,startWork,completeWork}.md` | Native `/codePlanner`, `/startWork`, `/completeWork` templates |
+| `commands/{codePlanner,startWork,completeWork}.md` | Native `/codePlanner`, `/startWork`, `/completeWork` templates |
 | `extensions/sandbox-dev/rules.ts` | Pure allow/confirm/deny policy (`classifyToolCall`, `matchPattern`, `isOutsideCwd`, `mergeConfig`) |
 | `extensions/sandbox-dev/config.ts` | Global + project config loading, malformed files ignored |
 | `extensions/sandbox-dev/state.ts` | Plan hash, `Original Ask` extraction, approval/outcome entry helpers |
