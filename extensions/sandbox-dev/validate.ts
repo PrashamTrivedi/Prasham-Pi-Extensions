@@ -128,11 +128,17 @@ export function collectFacts(cwd: string, task: string, turns: string, mode: Wor
   for (const file of ["taskFindings.md", GOAL_FILE, ...requiredArtifacts(mode)]) {
     fileLines[file] = lineCount(cwd, task, file);
   }
+  // The work may be committed (completeWork commits at the end): judge the committed range since
+  // currentCommitHash first, then anything still uncommitted, so neither is invisible.
+  const start = (readTaskFile(cwd, task, "currentCommitHash") ?? "").trim();
+  const committed = START_HASH_RE.test(start) ? git(cwd, ["diff", "--stat", `${start}..HEAD`]) : undefined;
+  const working = git(cwd, ["diff", "--stat", "HEAD"]);
+  const diffStat = [committed, working].filter((part): part is string => Boolean(part && part.trim())).join("\n");
   return {
     goal,
     plan,
     outcome: extractOutcome(plan),
-    diffStat: git(cwd, ["diff", "--stat", "HEAD"]) ?? "(no working-tree diff)",
+    diffStat: diffStat || "(no diff since currentCommitHash)",
     fileLines,
     headCommit: git(cwd, ["log", "-1", "--format=%B"]) ?? "(no commit)",
     evidence: evidenceLines(turns),

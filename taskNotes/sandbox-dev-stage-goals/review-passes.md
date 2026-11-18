@@ -5,4 +5,6 @@
   budget reset had no test; unused helper exports.
 - Pass 2: 2 findings — `session_start` resurrected a run whose outcome entry was already `met`;
   a failed `goal.md` write was silent in `dev_stage`/`dev_outcome_met`.
-- Pass 3: 0 findings
+- Pass 3: 1 finding — `collectFacts` judged only the working tree, so committed work was invisible
+  to the work validator; now the committed range since `currentCommitHash` plus the working tree.
+- Pass 4: 0 findings

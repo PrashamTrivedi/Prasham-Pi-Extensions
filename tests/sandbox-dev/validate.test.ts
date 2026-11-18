@@ -86,6 +86,16 @@ describe("deterministic checks", () => {
     }
   });
 
+  test("facts judge the committed range, not only the working tree", () => {
+    const cwd = completeRepo();
+    try {
+      const facts = seed(cwd);
+      expect(facts.diffStat).toContain("tests/widget.test.ts");
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
   test("a missing artifact is a named file miss", () => {
     const cwd = completeRepo();
     try {

@@ -6,8 +6,8 @@ on branch `sandbox-dev-stage-goals`.
 | Command | Exit | Summary |
 |---|---|---|
 | `npm run typecheck` | 0 | `tsc --noEmit`, no output |
-| `bun test tests/sandbox-dev` | 0 | 87 pass, 0 fail, 286 expect() calls (6 files) |
-| `npm test` | 0 | 506 pass, 0 fail, 2067 expect() calls (57 files) |
+| `bun test tests/sandbox-dev` | 0 | 88 pass, 0 fail, 287 expect() calls (6 files) |
+| `npm test` | 0 | 509 pass, 0 fail, 2075 expect() calls (57 files) |
 | `node scripts/check-package.mjs` | 0 | package manifest valid |
 | `node scripts/check-local.mjs` | 0 | local-first rule holds |
 
