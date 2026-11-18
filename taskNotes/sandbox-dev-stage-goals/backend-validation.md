@@ -6,8 +6,8 @@ on branch `sandbox-dev-stage-goals`.
 | Command | Exit | Summary |
 |---|---|---|
 | `npm run typecheck` | 0 | `tsc --noEmit`, no output |
-| `bun test tests/sandbox-dev` | 0 | 88 pass, 0 fail, 287 expect() calls (6 files) |
-| `npm test` | 0 | 509 pass, 0 fail, 2075 expect() calls (57 files) |
+| `bun test tests/sandbox-dev` | 0 | 89 pass, 0 fail, 288 expect() calls (6 files) |
+| `npm test` | 0 | 510 pass, 0 fail, 2076 expect() calls (57 files) |
 | `node scripts/check-package.mjs` | 0 | package manifest valid |
 | `node scripts/check-local.mjs` | 0 | local-first rule holds |
 
@@ -26,7 +26,8 @@ on branch `sandbox-dev-stage-goals`.
   artifact, a review without a terminal line, a commit with a body, an unpushed branch, an empty
   test diff, and an unreachable decision server each fail with the named miss. `semantics` and
   `stage` cannot be waived; a reasoned waiver clears `pushed`.
-- **Outcome:** `dev_outcome_met` refuses in the work stage (`stage` miss), records `met: false`
+- **Outcome:** the declared `evidence` is judged together with the transcript turns;
+  `dev_outcome_met` refuses in the work stage (`stage` miss), records `met: false`
   with the misses when it fails, and records `met: true` with `waived` + `not_run` when it passes.
   The criterion map (8 `noul` scores) is written to `goal.md` and the outcome entry.
 - **Fixture dry run:** `tests/fixtures/taskNotes/88-skills-commands-import` (plan + requirements +

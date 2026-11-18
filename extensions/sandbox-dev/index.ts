@@ -558,6 +558,7 @@ export default function sandboxDev(pi: ExtensionAPI) {
         mode: anchor.mode,
         stage: anchor.stage,
         facts,
+        evidence,
         notRun,
         waive,
         deps,

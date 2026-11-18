@@ -311,6 +311,33 @@ describe("complete validator", () => {
     }
   });
 
+  test("the declared evidence is judged together with the transcript", async () => {
+    const cwd = completeRepo();
+    let seen = "";
+    try {
+      const facts = seed(cwd);
+      const capture = {
+        askJev: async (state: unknown, questions: Record<string, unknown>) => {
+          seen = (state as { evidence?: string }).evidence ?? "";
+          return { answers: answersFor(questions) };
+        },
+      };
+      await validateComplete({
+        cwd,
+        task: TASK,
+        mode: "backend",
+        stage: "complete",
+        facts,
+        evidence: "npm run typecheck exit 0; bun test: 88 pass, 0 fail",
+        notRun: [],
+        deps: capture,
+      });
+      expect(seen).toContain("bun test: 88 pass, 0 fail");
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
   test("semantics and stage can never be waived", async () => {
     const cwd = completeRepo();
     try {

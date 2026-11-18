@@ -288,7 +288,8 @@ const COMPLETE_QUESTIONS = {
   },
 } as const;
 
-function jevState(facts: Facts, notRun: string[] = []): Record<string, unknown> {
+function jevState(facts: Facts, notRun: string[] = [], declared = ""): Record<string, unknown> {
+  const evidence = [declared, facts.evidence].filter((part) => part && part.trim()).join("\n");
   return {
     goal: facts.goal.slice(0, 6000),
     plan: facts.plan.slice(0, 6000),
@@ -296,7 +297,7 @@ function jevState(facts: Facts, notRun: string[] = []): Record<string, unknown> 
     diffStat: facts.diffStat.slice(0, 3000),
     fileLines: facts.fileLines,
     headCommit: facts.headCommit.slice(0, 500),
-    evidence: facts.evidence,
+    evidence: evidence.slice(0, 8000),
     criteria: facts.criteria,
     notRun,
   };
@@ -368,6 +369,8 @@ export async function validateComplete(input: {
   mode: WorkMode;
   stage: Stage;
   facts: Facts;
+  /** The raw evidence the model passed to `dev_outcome_met`; judged together with the turns. */
+  evidence?: string;
   notRun: string[];
   waive?: Waiver[];
   deps: CheckDeps;
@@ -388,7 +391,7 @@ export async function validateComplete(input: {
   const questions: Record<string, unknown> = { ...COMPLETE_QUESTIONS, ...criterionQuestions(criteria) };
   if (input.notRun.length === 0) delete questions.not_run_matters;
 
-  const answers = await ask(input.deps, jevState(input.facts, input.notRun), questions);
+  const answers = await ask(input.deps, jevState(input.facts, input.notRun, input.evidence), questions);
   const scores = answers ? criterionScores(criteria, answers) : criteria.map((criterion) => ({ criterion, score: 0 }));
   if (!answers) {
     misses.push({ check: "semantics", detail: "decision server unavailable; cannot pass" });
