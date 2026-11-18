@@ -1,87 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import sandboxDev, { jev } from "../../extensions/sandbox-dev/index.ts";
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-function harness(
-  cwd: string,
-  options: {
-    hasUI: boolean;
-    confirm?: boolean;
-    jevDecision?: (eventName: string, payload: any) => Promise<any>;
-    askJev?: (state: any, questions: any) => Promise<any>;
-  } = { hasUI: true },
-) {
-  const hooks = new Map<string, Function>();
-  const tools = new Map<string, any>();
-  const commands = new Map<string, any>();
-  const appended: Array<{ customType: string; data?: unknown }> = [];
-  const notifications: string[] = [];
-  const sent: string[] = [];
-  const messages: Array<{ customType: string; content: string }> = [];
-  const confirmCalls: string[] = [];
-  const jevDecisionCalls: string[] = [];
-
-  const pi: any = {
-    on: (name: string, handler: Function) => hooks.set(name, handler),
-    registerTool: (tool: any) => tools.set(tool.name, tool),
-    registerCommand: (name: string, command: any) => commands.set(name, command),
-    appendEntry: (customType: string, data?: unknown) => appended.push({ customType, data }),
-    sendMessage: (message: { customType: string; content: string }) => messages.push(message),
-    sendUserMessage: (text: string) => sent.push(text),
-  };
-
-  const ctx: any = {
-    cwd,
-    mode: options.hasUI ? "tui" : "print",
-    hasUI: options.hasUI,
-    ui: {
-      setStatus: () => {},
-      notify: (message: string) => notifications.push(message),
-      input: async () => undefined,
-      select: async () => undefined,
-      editor: async () => undefined,
-      confirm: async (_title: string, message: string) => {
-        confirmCalls.push(message);
-        return options.confirm ?? false;
-      },
-    },
-    sessionManager: { getBranch: () => [], getSessionId: () => "test-session" },
-  };
-
-  // No subprocess, no network: stub the Jev bridge. Defaults fail closed.
-  jev.runJevDecision = options.jevDecision ?? (async () => ({ gate: { action: "ask", reason: "test: uncertain" } }));
-  jev.askJev = options.askJev ?? (async () => ({
-    answers: {
-      irreversible: { type: "noul", noul: 0.9 },
-      scope_risk: { type: "noul", noul: 0.9 },
-      safe_autoproceed: { type: "noul", noul: 0.1 },
-    },
-    model: "test",
-    inputTokens: 0,
-  }));
-  const baseRunDecision = jev.runJevDecision;
-  jev.runJevDecision = async (eventName, payload) => {
-    jevDecisionCalls.push(eventName);
-    return baseRunDecision(eventName, payload);
-  };
-
-  sandboxDev(pi);
-  return { hooks, tools, commands, appended, notifications, sent, messages, confirmCalls, jevDecisionCalls, ctx };
-}
-
-function tempRepo(task: string): string {
-  const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-dev-auto-"));
-  mkdirSync(join(cwd, "taskNotes", task), { recursive: true });
-  writeFileSync(
-    join(cwd, "taskNotes", task, "taskFindings.md"),
-    ["# Add widget", "", "## Original Ask", "Add a turn-count widget to the footer.", "", "## Complexity", "3"].join("\n"),
-  );
-  return cwd;
-}
+import { cleanup, harness, readTaskFile, tempRepo } from "./helpers.ts";
 
 const SAFE_ANSWERS = {
   answers: {
@@ -109,7 +27,7 @@ describe("decision server (single gate)", () => {
       expect(notifications).toHaveLength(0);
       expect(confirmCalls).toHaveLength(0);
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -127,7 +45,7 @@ describe("decision server (single gate)", () => {
       expect(confirmCalls).toHaveLength(1);
       expect(confirmCalls[0]).toContain("destructive rm");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -145,7 +63,7 @@ describe("decision server (single gate)", () => {
       expect(result?.reason).toContain("denied by you");
       expect(confirmCalls).toHaveLength(1);
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -163,7 +81,7 @@ describe("decision server (single gate)", () => {
       expect(confirmCalls).toHaveLength(1);
       expect(confirmCalls[0]).toContain("unavailable");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -180,7 +98,7 @@ describe("decision server (single gate)", () => {
       expect(result?.reason).toContain("secret read");
       expect(result?.reason).toContain("failing closed");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -201,7 +119,7 @@ describe("decision server (single gate)", () => {
       expect(notifications.some((line) => line.includes("narrowed the command"))).toBe(true);
       expect(notifications.some((line) => line.includes("rewrote the command"))).toBe(true);
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -219,13 +137,13 @@ describe("decision server (single gate)", () => {
       expect(confirmCalls).toHaveLength(2);
       expect(jevDecisionCalls).toHaveLength(2);
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 });
 
 describe("plan-gate Jev routing", () => {
-  test("(d) clearly-safe answers auto-approve and arm the anchor", async () => {
+  test("(d) clearly-safe answers auto-approve, write the work goal, and arm the anchor", async () => {
     const cwd = tempRepo("add-widget");
     try {
       const { hooks, tools, messages, notifications, confirmCalls, ctx } = harness(cwd, {
@@ -240,6 +158,7 @@ describe("plan-gate Jev routing", () => {
       expect(messages.some((message) => message.content.includes("auto-approved by Jev"))).toBe(true);
       expect(messages.some((message) => message.content.includes("sandbox-dev gate"))).toBe(false);
       expect(confirmCalls).toHaveLength(0);
+      expect(readTaskFile(cwd, "add-widget", "goal.md")).toContain('dev_stage { "to": "complete" }');
 
       // The anchor is armed, so supervision is active without a human reply.
       const settle = await hooks.get("agent_before_settle")!(
@@ -247,9 +166,9 @@ describe("plan-gate Jev routing", () => {
         ctx,
       );
       expect(settle?.continue).toBe(true);
-      expect(settle.entries[0].content).toContain("ANCHORED OUTCOME");
+      expect(settle.entries[0].content).toContain("LIVE WORK GOAL");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -267,7 +186,7 @@ describe("plan-gate Jev routing", () => {
       expect(result.content[0].text).toContain("Gate presented");
       expect(messages[0].content).toContain("sandbox-dev gate");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 
@@ -291,7 +210,7 @@ describe("plan-gate Jev routing", () => {
       expect(result.content[0].text).toContain("Gate presented");
       expect(messages[0].content).toContain("sandbox-dev gate");
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      cleanup(cwd);
     }
   });
 });

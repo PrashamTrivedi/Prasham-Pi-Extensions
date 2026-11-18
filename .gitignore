@@ -9,3 +9,5 @@ pi-fabric.config.json
 cloudflare-ai-usage.config.json
 !examples/*.json
 .playwright-cli/
+# sandbox-dev's temporary live goal (regenerated on every session start)
+taskNotes/*/goal.md

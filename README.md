@@ -59,7 +59,7 @@ Merge that entry into your existing settings; do not replace unrelated configura
 | **Claude commands** | Registers `~/.claude/commands/**/*.md` as Pi slash commands (subfolders become `git:blame`-style namespaces; `$ARGUMENTS`, `$1`..`$9`) | `PI_CLAUDE_COMMANDS_DIR` |
 | **Cloudflare AI usage** | Estimates locally observed Workers AI token usage and optionally fetches billing data; renders only while a Workers AI model is active | `/cf-ai-usage`, external config |
 | **Skill-name sanitizer** | Previews and optionally corrects invalid skill frontmatter names | `/sanitize-skills`, `/sanitize-skills apply` |
-| **sandbox-dev** | Native plan → approve → implement → verify loop: every tool call judged by the decision server with one prompt on any non-approval, a conversational plan gate, single-outcome supervision | `/dev-approve`, `/dev-status`, `/dev-reset`, two tools |
+| **sandbox-dev** | Native plan → approve → implement → verify loop: every tool call judged by the decision server with one prompt on any non-approval, a conversational plan gate, validated work → complete stage goals | `/dev-approve`, `/dev-status`, `/dev-reset`, three tools |
 
 The herdr-generated integration is intentionally not redistributed. Install herdr's own integration separately.
 
@@ -221,11 +221,12 @@ bun run extensions/sanitize-skill-names.ts --apply
 
 ### sandbox-dev
 
-A native Pi port of the three ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `commands/codePlanner.md`, `commands/startWork.md`, and `commands/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
+A native Pi port of the ideas behind Claude Code's `sandbox-dev` workflow. The prose lives in `skills/sandbox-dev/SKILL.md`, with `commands/codePlanner.md`, `commands/startWork.md`, and `commands/completeWork.md` as the native `/codePlanner`, `/startWork`, and `/completeWork` commands. The extension supplies the guarantees markdown cannot:
 
 - **Decision-server gate.** Every `tool_call` is mapped to the neutral jev-harness shape and sent to the decision server; an approval runs it, and a reject, an "ask", or an unreachable server becomes exactly one plain yes/no prompt for the human (fail closed with no UI). This package holds no dangerous-command list and no protected-path list, keeps no approval memory, and blocks nothing on its own — the decision server owns every judgement. `jev-gate` therefore keeps only its result and stop hooks: one gate, one owner, one server call per tool call.
 - **Conversational plan gate.** `dev_request_approval` reads `taskNotes/<task>/taskFindings.md` from disk and appends the gate to the chat. It records nothing and classifies nothing; the human's reply in the transcript is the record, and the agent reads it. `r` only shows the plan; `/dev-approve` is an explicit human-only approval. The plan review alongside the digest is an ordinary model task, not a Jev judgment.
-- **Single-outcome anchoring.** The plan's `Original Ask` becomes the anchored outcome; the supervisor restates it each turn, enforces a turn budget, and stops when `dev_outcome_met` records raw evidence. Budget exhaustion is tracked separately and is not a satisfied outcome.
+- **Stage goals.** Approval writes the work goal to `taskNotes/<task>/goal.md` (the plan's `Original Ask` inside the work template, plus any `g: <note>`) and re-injects it every turn. `dev_stage { "to": "complete" }` runs the work validator and only then switches the live goal to the complete goal with the mode-dependent file list. A model source write never approves the gate.
+- **Stop-hook validation.** When the model settles, the current stage's validator runs: fs/git checks (artifacts, `review-passes` terminal line, one-line conventional commit, pushed branch, a test file in `currentCommitHash..HEAD`, paths inside the root) plus decision-server judgement over facts. Misses continue the run by name; three consecutive failures in one stage escalate to the human; an unreachable server never passes. `dev_outcome_met` runs the complete validator itself and records `met` only on a pass or a written waiver.
 
 ```text
 /dev-approve <task>   # approve a plan and start the implementation

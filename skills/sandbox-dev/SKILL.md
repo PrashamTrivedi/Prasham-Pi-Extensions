@@ -24,7 +24,8 @@ This skill is driven by a Pi extension. Know these names precisely:
 | Kind | Name | Purpose |
 |------|------|---------|
 | Tool | `dev_request_approval` | Args `{ task: "<task-dir-name>" }`. Reads `taskNotes/<task>/taskFindings.md` from disk and appends the plan gate to the chat. It records nothing; the human's reply in the chat is the record. |
-| Tool | `dev_outcome_met` | Args `{ task, evidence }`. Declares the single stated outcome achieved. `evidence` must be raw transcript-visible output (exit codes, test summary lines), not a claim. |
+| Tool | `dev_stage` | Args `{ task?, to: "complete" }`. Runs the work validator, then rewrites the live goal to the complete goal and resets the turn budget. Refuses with `NOT READY: <misses>` while the work validator fails. |
+| Tool | `dev_outcome_met` | Args `{ task, evidence, not_run, waive? }`. Runs the complete validator (artifacts, one-line commit, pushed branch, tests in the diff, decision server). `evidence` must be raw transcript-visible output (exit codes, test summary lines). `not_run` is required (may be empty); `waive: [{ check, reason }]` bypasses one named miss only with a reason. `met` is recorded only on a pass. |
 | Command | `/dev-approve <task>` | Explicit human-only approval: records the plan and starts `/startWork`. |
 | Command | `/dev-status` | Print the extension's current approval/outcome state for the session. |
 | Command | `/dev-reset` | Clear approval/outcome state and start the supervision cleanly. |
@@ -248,6 +249,8 @@ invented:
 
 - `taskNotes/<task>/taskFindings.md` - the plan. `## Original Ask` is the single
   source of truth for scope.
+- `taskNotes/<task>/goal.md` - the temporary live goal. Only the extension writes
+  it; on resume it is regenerated from `taskFindings.md` + artifacts, never trusted.
 - `taskNotes/<task>/currentCommitHash` - the commit the work started from.
 - `taskNotes/<task>/taskWalkthrough.md` - human setup and verification steps.
 - `taskNotes/<task>/review-passes.md` - finding counts per review pass.
